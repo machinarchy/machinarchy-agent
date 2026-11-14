@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build release binaries
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.mod
+
+      - name: Configure optional private protocol module access
+        env:
+          MODULE_TOKEN: ${{ secrets.MACHINARCHY_PROTOCOL_READ_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${MODULE_TOKEN}" ]]; then
+            echo "GOPRIVATE=github.com/machinarchy/machinarchy-protocol" >> "${GITHUB_ENV}"
+            git config --global url."https://x-access-token:${MODULE_TOKEN}@github.com/".insteadOf "https://github.com/"
+          fi
+
+      - name: Build Linux binaries
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          BUILD_TIME="$(git show -s --format=%cI "${RELEASE_SHA}")"
+          LDFLAGS="-s -w -X main.Version=${RELEASE_TAG} -X main.Commit=${RELEASE_SHA} -X main.BuildTime=${BUILD_TIME}"
+          for ARCH in amd64 arm64; do
+            echo "Building linux/${ARCH}"
+            env CGO_ENABLED=0 GOOS=linux GOARCH="${ARCH}" \
+              go build -trimpath -ldflags="${LDFLAGS}" \
+              -o "dist/machinarchy-agent-linux-${ARCH}" ./cmd/machinarchy-agent
+          done
+
+      - name: Package and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          for BINARY in machinarchy-agent-linux-*; do
+            tar -czf "${BINARY}.tar.gz" "${BINARY}"
+          done
+          sha256sum machinarchy-agent-linux-* > checksums.txt
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" dist/* --clobber
+          else
+            gh release create "${TAG}" dist/* --generate-notes --verify-tag
+          fi

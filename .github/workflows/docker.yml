@@ -1,0 +1,75 @@
+name: Container image
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - '**/*.go'
+      - go.mod
+      - go.sum
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.mod
+
+      - name: Derive image metadata
+        id: meta
+        shell: bash
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            TAG="${GITHUB_REF_NAME#v}"
+          else
+            TAG="sha-${GITHUB_SHA::12}"
+          fi
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GHCR
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "${GH_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+
+      - name: Build image (pull requests)
+        if: github.event_name == 'pull_request'
+        env:
+          MACHINARCHY_PROTOCOL_READ_TOKEN: ${{ secrets.MACHINARCHY_PROTOCOL_READ_TOKEN }}
+        run: |
+          docker buildx build --platform linux/amd64 \
+            --secret id=protocol_token,env=MACHINARCHY_PROTOCOL_READ_TOKEN \
+            --build-arg VERSION=pr-${{ github.event.number }} \
+            --tag machinarchy-agent:ci --load .
+
+      - name: Build and push image
+        if: github.event_name != 'pull_request'
+        env:
+          MACHINARCHY_PROTOCOL_READ_TOKEN: ${{ secrets.MACHINARCHY_PROTOCOL_READ_TOKEN }}
+        run: |
+          docker buildx build --platform linux/amd64 \
+            --secret id=protocol_token,env=MACHINARCHY_PROTOCOL_READ_TOKEN \
+            --build-arg VERSION='${{ steps.meta.outputs.tag }}' \
+            --build-arg COMMIT='${{ github.sha }}' \
+            -t '${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}' \
+            -t '${{ steps.meta.outputs.image }}:latest' \
+            --push .

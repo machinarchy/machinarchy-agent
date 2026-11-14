@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROTOCOL_DIR="${PROTOCOL_DIR:-$(cd "${ROOT_DIR}/../machinarchy-protocol" 2>/dev/null && pwd || true)}"
+WORK_DIR="$(mktemp -d)"
+trap 'rm -rf "${WORK_DIR}"' EXIT
+
+mkdir -p "${WORK_DIR}/agent/cmd" "${WORK_DIR}/agent/internal" \
+  "${WORK_DIR}/protocol/agent" "${WORK_DIR}/testdeps/nats.go"
+cp -R "${ROOT_DIR}/cmd/machinarchy-agent" "${WORK_DIR}/agent/cmd/"
+cp -R "${ROOT_DIR}/internal/agent" "${WORK_DIR}/agent/internal/"
+if [[ -z "${PROTOCOL_DIR}" || ! -d "${PROTOCOL_DIR}/agent/v1" ]]; then
+  echo "machinarchy-protocol checkout not found; set PROTOCOL_DIR to its repository path." >&2
+  exit 1
+fi
+cp -R "${PROTOCOL_DIR}/agent/v1" "${WORK_DIR}/protocol/agent/"
+cp -R "${ROOT_DIR}/testsupport/nats.go/." "${WORK_DIR}/testdeps/nats.go/"
+
+cat > "${WORK_DIR}/agent/go.mod" <<'MOD'
+module github.com/machinarchy/machinarchy-agent
+
+go 1.23
+
+require (
+	github.com/machinarchy/machinarchy-protocol v0.0.0
+	github.com/nats-io/nats.go v0.0.0
+)
+
+replace github.com/machinarchy/machinarchy-protocol => ../protocol
+replace github.com/nats-io/nats.go => ../testdeps/nats.go
+MOD
+
+cat > "${WORK_DIR}/protocol/go.mod" <<'MOD'
+module github.com/machinarchy/machinarchy-protocol
+
+go 1.23
+MOD
+
+cd "${WORK_DIR}/agent"
+printf '%s\n' '== unit tests (stub NATS transport) =='
+go test -count=1 ./...
+printf '%s\n' '== race detector =='
+go test -race -count=1 ./...
+printf '%s\n' '== go vet =='
+go vet ./...
+printf '%s\n' '== build =='
+go build -o "${WORK_DIR}/machinarchy-agent" ./cmd/machinarchy-agent
+printf '%s\n' 'Isolated verification completed. This does not replace testing against the real NATS module or a live controller.'

@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Go verification
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.mod
+
+      - name: Configure optional private protocol module access
+        env:
+          MODULE_TOKEN: ${{ secrets.MACHINARCHY_PROTOCOL_READ_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${MODULE_TOKEN}" ]]; then
+            echo "GOPRIVATE=github.com/machinarchy/machinarchy-protocol" >> "${GITHUB_ENV}"
+            git config --global url."https://x-access-token:${MODULE_TOKEN}@github.com/".insteadOf "https://github.com/"
+          fi
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Check formatting
+        run: make fmt-check
+
+      - name: Unit tests
+        run: go test -count=1 ./...
+
+      - name: Race detector
+        run: go test -race -count=1 ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: make build
+

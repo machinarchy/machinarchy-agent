@@ -1,0 +1,31 @@
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.creds
+*.seed
+*.pem
+*.key
+
+# Go build and test output
+/bin/
+/dist/
+/coverage.out
+/coverage.html
+*.test
+*.prof
+
+# Local runtime state
+/data/
+/identity.json
+/identity.json.*
+
+# Workspace files are local when developing alongside machinarchy-protocol
+go.work
+go.work.sum
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

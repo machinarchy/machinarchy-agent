@@ -1,0 +1,16 @@
+services:
+  nats:
+    image: nats:2.15.3-alpine
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "127.0.0.1:4222:4222"
+      - "127.0.0.1:8222:8222"
+    healthcheck:
+      test: ["CMD", "nats-server", "--signal", "liveness"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+# The agent service is intentionally not started here. A reachable NATS server
+# is not sufficient: the Machinarchy controller must implement registration,
+# lease renewal, event publication, and operation-result ingestion first.
