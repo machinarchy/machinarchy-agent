@@ -31,8 +31,18 @@ secret values. See `.env.example` for a commented template.
 | `MACHINARCHY_AGENT_OPERATION_MAX_INPUT_BYTES` | `65536` | Maximum operation input |
 | `MACHINARCHY_AGENT_OPERATION_MAX_OUTPUT_BYTES` | `262144` | Maximum operation output |
 | `MACHINARCHY_AGENT_RESULT_PUBLISH_TIMEOUT` | `5s` | Result publish timeout |
+| `MACHINARCHY_AGENT_EXECUTION_ENABLED` | `false` | Explicitly enables `exec.command` and `exec.script` on this host |
+| `MACHINARCHY_AGENT_EXECUTION_SHELL` | `/bin/sh` | Absolute local interpreter path used by `exec.script`; controller cannot override it |
 | `MACHINARCHY_AGENT_REGISTER_SUBJECT` | protocol default | Registration subject override |
 | `MACHINARCHY_AGENT_LEASE_RENEW_SUBJECT` | protocol default | Lease renewal subject override |
+
+## Execution notes
+
+- Command execution is disabled unless `MACHINARCHY_AGENT_EXECUTION_ENABLED=true`.
+- `exec.command` executes an argv vector; it does not implicitly invoke a shell.
+- `exec.script` uses the locally configured shell and receives script content on stdin.
+- Both execute with the Agent process OS identity and its filesystem/service sandbox.
+- If command execution is enabled, the operation output limit must be at least 1024 bytes.
 
 ## Production rules
 

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	agentv1 "github.com/machinarchy/machinarchy-protocol/agent/v1"
+	"github.com/machinarchy/machinarchy-protocol/agent/v1"
 )
 
 const (
@@ -42,6 +42,8 @@ const (
 	envOperationInputLimit  = "MACHINARCHY_AGENT_OPERATION_MAX_INPUT_BYTES"
 	envOperationOutputLimit = "MACHINARCHY_AGENT_OPERATION_MAX_OUTPUT_BYTES"
 	envResultPublishTimeout = "MACHINARCHY_AGENT_RESULT_PUBLISH_TIMEOUT"
+	envExecutionEnabled     = "MACHINARCHY_AGENT_EXECUTION_ENABLED"
+	envExecutionShellPath   = "MACHINARCHY_AGENT_EXECUTION_SHELL"
 )
 
 // Config contains process-local settings needed to establish the agent's
@@ -83,6 +85,11 @@ type Config struct {
 	MaxOperationInputBytes  int
 	MaxOperationOutputBytes int
 	ResultPublishTimeout    time.Duration
+
+	// CommandExecutionEnabled opts this host into controller-requested command
+	// and shell-script execution. It is disabled by default.
+	CommandExecutionEnabled bool
+	ExecutionShellPath      string
 }
 
 // LoadConfig loads and validates agent configuration from the process
@@ -129,6 +136,8 @@ func LoadConfig() (Config, error) {
 		MaxOperationInputBytes:  maxOperationInputBytes,
 		MaxOperationOutputBytes: maxOperationOutputBytes,
 		ResultPublishTimeout:    5 * time.Second,
+		CommandExecutionEnabled: false,
+		ExecutionShellPath:      "/bin/sh",
 	}
 
 	var err error
@@ -171,6 +180,10 @@ func LoadConfig() (Config, error) {
 	if cfg.ResultPublishTimeout, err = durationFromEnv(envResultPublishTimeout, cfg.ResultPublishTimeout); err != nil {
 		return Config{}, err
 	}
+	if cfg.CommandExecutionEnabled, err = boolFromEnv(envExecutionEnabled, cfg.CommandExecutionEnabled); err != nil {
+		return Config{}, err
+	}
+	cfg.ExecutionShellPath = strings.TrimSpace(get(envExecutionShellPath, cfg.ExecutionShellPath))
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -217,6 +230,14 @@ func (c Config) Validate() error {
 	}
 	if c.ResultPublishTimeout <= 0 {
 		return fmt.Errorf("%s must be positive", envResultPublishTimeout)
+	}
+	if c.CommandExecutionEnabled {
+		if c.MaxOperationOutputBytes < minimumExecutionOutputBytes {
+			return fmt.Errorf("%s must be at least %d when command execution is enabled", envOperationOutputLimit, minimumExecutionOutputBytes)
+		}
+		if c.ExecutionShellPath == "" || !filepath.IsAbs(c.ExecutionShellPath) || strings.ContainsAny(c.ExecutionShellPath, "\r\n\x00") {
+			return fmt.Errorf("%s must be an absolute single-line path when command execution is enabled", envExecutionShellPath)
+		}
 	}
 	if c.IdentityFile == "" || strings.TrimSpace(c.IdentityFile) != c.IdentityFile || strings.ContainsAny(c.IdentityFile, "\r\n\x00") {
 		return errors.New("agent identity file path must be a non-empty single-line path")
@@ -334,6 +355,18 @@ func positiveIntFromEnv(key string, fallback int) (int, error) {
 	parsed, err := strconv.Atoi(value)
 	if err != nil || parsed < 1 {
 		return 0, fmt.Errorf("%s must be a positive integer", key)
+	}
+	return parsed, nil
+}
+
+func boolFromEnv(key string, fallback bool) (bool, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("%s must be true or false", key)
 	}
 	return parsed, nil
 }

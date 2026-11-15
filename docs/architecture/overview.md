@@ -20,8 +20,11 @@ identity.
 5. **Operation dispatcher** — enforces bounded queue depth, bounded worker
    count, operation deadlines and cancellation.
 6. **Capability registry** — resolves only explicitly registered capabilities.
-   It must not interpret arbitrary message payloads as shell commands.
-7. **Local state** — persists the controller-assigned identity and bounded
+   Command and script capabilities are opt-in, validated, bounded and
+   cancellable; they are never enabled by default.
+7. **Execution adapter** — maps transport-neutral execution contracts to local
+   process execution, preserving stdout, stderr and exit status.
+8. **Local state** — persists the controller-assigned identity and bounded
    event ledger with private filesystem permissions.
 
 ## Authority boundaries
@@ -59,6 +62,8 @@ Every capability must:
 - avoid writing secret values to logs or results;
 - expose a stable, documented capability name and version.
 
-The initial built-in `runtime.info` capability is read-only and reports limited
-runtime metadata. Arbitrary shell, script execution, SSH command execution,
-and filesystem mutation are not enabled.
+The built-in `runtime.info` capability is read-only and reports limited
+runtime metadata plus the configured capability names. `exec.command` and
+`exec.script` are available only when `MACHINARCHY_AGENT_EXECUTION_ENABLED=true`.
+They use the common `machinarchy-protocol/execution/v1` contracts also intended
+for the controller's SSH executor. The Agent itself does not implement SSH.

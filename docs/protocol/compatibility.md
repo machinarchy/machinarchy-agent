@@ -19,8 +19,10 @@ provisional until controller/agent end-to-end tests are complete.
 ## Subject contract
 
 The protocol module defines the registration, lease-renewal, per-agent event and
-per-agent result subjects. NATS credentials must be restricted to the required
-subjects. The agent must never subscribe to a wildcard covering other agents.
+per-agent result subjects. It also defines transport-neutral execution payloads
+in `execution/v1`; both SSH and Agent executors must preserve those payload and
+result semantics. NATS credentials must be restricted to the required subjects.
+The agent must never subscribe to a wildcard covering other agents.
 
 ## Controller integration gate
 

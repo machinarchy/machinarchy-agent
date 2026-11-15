@@ -7,7 +7,7 @@ WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "${WORK_DIR}"' EXIT
 
 mkdir -p "${WORK_DIR}/agent/cmd" "${WORK_DIR}/agent/internal" \
-  "${WORK_DIR}/protocol/agent" "${WORK_DIR}/testdeps/nats.go"
+  "${WORK_DIR}/protocol/agent" "${WORK_DIR}/protocol/execution" "${WORK_DIR}/testdeps/nats.go"
 cp -R "${ROOT_DIR}/cmd/machinarchy-agent" "${WORK_DIR}/agent/cmd/"
 cp -R "${ROOT_DIR}/internal/agent" "${WORK_DIR}/agent/internal/"
 if [[ -z "${PROTOCOL_DIR}" || ! -d "${PROTOCOL_DIR}/agent/v1" ]]; then
@@ -15,6 +15,7 @@ if [[ -z "${PROTOCOL_DIR}" || ! -d "${PROTOCOL_DIR}/agent/v1" ]]; then
   exit 1
 fi
 cp -R "${PROTOCOL_DIR}/agent/v1" "${WORK_DIR}/protocol/agent/"
+cp -R "${PROTOCOL_DIR}/execution/v1" "${WORK_DIR}/protocol/execution/"
 cp -R "${ROOT_DIR}/testsupport/nats.go/." "${WORK_DIR}/testdeps/nats.go/"
 
 cat > "${WORK_DIR}/agent/go.mod" <<'MOD'

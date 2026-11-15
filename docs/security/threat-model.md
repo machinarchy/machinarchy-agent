@@ -27,7 +27,7 @@
 | Malformed/oversized messages | Strict decoder, message limits, bounded queues |
 | Duplicate events | Bounded local event ledger and operation identifiers |
 | Resource exhaustion | Bounded workers, queues, timeouts, input/output limits |
-| Unsafe command execution | Explicit capability registry; no unrestricted shell capability |
+| Unsafe command execution | Execution disabled by default; explicit controller authorization; fixed local shell; strict inputs; bounded output; deadlines; process-group cancellation; least-privilege OS user |
 | Broker outage | Reconnect handling, lease renewal before resuming events |
 | Result loss | Documented Core NATS limitation; durable result path remains required |
 | Host compromise | Minimal service privileges, filesystem protections and deployment hardening |
@@ -41,3 +41,10 @@ unpublished results. Core NATS can lose messages during agent disconnection.
 These residual risks require controller-side authorization, NATS server
 hardening, host isolation and durable delivery design; source-code checks alone
 cannot eliminate them.
+
+When command execution is enabled, the controller is effectively trusted to
+request any operation permitted to the Agent's OS identity. A compromised
+controller or overly broad NATS ACL can therefore cause host-level impact.
+Keep execution disabled on hosts that should expose only read-only Agent
+capabilities, use a dedicated unprivileged service account by default, and
+review any change that grants the Agent additional OS privileges.

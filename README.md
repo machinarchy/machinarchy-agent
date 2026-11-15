@@ -7,10 +7,11 @@ connection to the Machinarchy control plane through the configured event
 broker. It receives controller-authorized work and executes only explicitly
 registered capabilities.
 
-> **Development status:** this repository is an initial extraction baseline.
-> The runtime, enrollment client, lease renewal, event validation, bounded
-> dispatcher, and lifecycle code are present. The controller integration and
-> real broker end-to-end contract must be completed and verified before
+> **Development status:** this is an early hybrid-execution implementation.
+> The Agent runtime, enrollment/lease lifecycle, event validation, bounded
+> dispatcher, and opt-in local command/script capabilities are present. The
+> controller-side shared execution model, capability inventory, real NATS
+> integration and end-to-end transport tests must still be completed before
 > production deployment. Core NATS is not a durable work queue.
 
 ## Repository responsibilities
@@ -62,11 +63,36 @@ Machinarchy Agent
 - Bounded operation queue and worker pool.
 - Per-operation deadline and cancellation support.
 - Graceful shutdown/drain behavior.
-- A read-only `runtime.info` capability.
+- A read-only `runtime.info` capability that reports the capabilities enabled
+  in the local Agent configuration.
+- Opt-in `exec.command` and `exec.script` capabilities using shared, transport-
+  neutral request/result contracts from `machinarchy-protocol/execution/v1`.
+- Bounded stdout/stderr capture, explicit child-process environment, operation
+  cancellation, and non-zero exit status reporting.
 
-The current implementation deliberately does **not** enable arbitrary shell
-execution, general filesystem mutation, SSH command execution, or script
-execution.
+Command and script execution remain **disabled by default**. When enabled, work
+runs with the operating-system permissions of the Agent process. The Agent
+never silently elevates privileges.
+
+## Hybrid execution role
+
+The Agent is one execution transport in Machinarchy, alongside the controller's
+SSH executor. Both transports use the same `execution/v1` contracts for command
+and script inputs and normalized results. Inventory, host targeting, transport
+selection, authorization, job scheduling and job history remain controller
+responsibilities. The Agent does not connect to hosts over SSH.
+
+To opt a host into Agent command and shell-script execution, explicitly set:
+
+```dotenv
+MACHINARCHY_AGENT_EXECUTION_ENABLED=true
+MACHINARCHY_AGENT_EXECUTION_SHELL=/bin/sh
+```
+
+`exec.command` runs an executable plus an argument vector without shell parsing.
+`exec.script` runs script text through the locally configured shell. See
+[`docs/architecture/execution.md`](docs/architecture/execution.md) for the
+execution contract, security boundary and current controller integration work.
 
 ## Requirements
 
@@ -79,7 +105,7 @@ execution.
 ## Quick start
 
 1. Create the `machinarchy-protocol` repository from the companion protocol
-   bundle and publish its first compatible tag, `v1.0.0`.
+   bundle and publish its first development tag, `v0.1.0`.
 2. Clone both repositories into a sibling workspace:
 
    ```text
@@ -157,8 +183,9 @@ after `go mod tidy` before publishing a release.
 
 ## Security
 
-Review [`SECURITY.md`](SECURITY.md) and
-[`docs/security/threat-model.md`](docs/security/threat-model.md) before enabling
+Review [`SECURITY.md`](SECURITY.md),
+[`docs/security/threat-model.md`](docs/security/threat-model.md), and
+[`docs/security/execution.md`](docs/security/execution.md) before enabling
 operation execution on production hosts.
 
 ## Compatibility and limitations

@@ -120,7 +120,7 @@ func (s *AgentSession) Run(ctx context.Context, conn Connection, events <-chan C
 	if err != nil {
 		return fmt.Errorf("initialize operation result publisher: %w", err)
 	}
-	registry, err := defaultCapabilityRegistry(s.config.AgentVersion)
+	registry, err := defaultCapabilityRegistry(s.config.AgentVersion, s.config)
 	if err != nil {
 		return fmt.Errorf("initialize agent capability registry: %w", err)
 	}

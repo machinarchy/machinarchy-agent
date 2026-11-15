@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	agentv1 "github.com/machinarchy/machinarchy-protocol/agent/v1"
+	"github.com/machinarchy/machinarchy-protocol/agent/v1"
+	executionv1 "github.com/machinarchy/machinarchy-protocol/execution/v1"
 )
 
 const (
@@ -132,6 +134,17 @@ func (r *CapabilityRegistry) Register(name string, capability Capability) error 
 	return nil
 }
 
+func (r *CapabilityRegistry) Names() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	names := make([]string, 0, len(r.capabilities))
+	for name := range r.capabilities {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 func (r *CapabilityRegistry) lookup(name string) (Capability, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -166,6 +179,10 @@ func validCapabilityName(name string) bool {
 // process metadata. It does not expose environment variables, filesystem
 // contents, credentials, network configuration, or arbitrary command output.
 func RuntimeInfoCapability(agentVersion string) Capability {
+	return runtimeInfoCapability(agentVersion, []string{"runtime.info"})
+}
+
+func runtimeInfoCapability(agentVersion string, capabilities []string) Capability {
 	return CapabilityFunc(func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -174,12 +191,13 @@ func RuntimeInfoCapability(agentVersion string) Capability {
 			return nil, err
 		}
 		result := struct {
-			AgentVersion string `json:"agent_version"`
-			GoVersion    string `json:"go_version"`
-			OS           string `json:"os"`
-			Architecture string `json:"architecture"`
-			CPUCount     int    `json:"cpu_count"`
-		}{AgentVersion: agentVersion, GoVersion: runtime.Version(), OS: runtime.GOOS, Architecture: runtime.GOARCH, CPUCount: runtime.NumCPU()}
+			AgentVersion string   `json:"agent_version"`
+			GoVersion    string   `json:"go_version"`
+			OS           string   `json:"os"`
+			Architecture string   `json:"architecture"`
+			CPUCount     int      `json:"cpu_count"`
+			Capabilities []string `json:"capabilities"`
+		}{AgentVersion: agentVersion, GoVersion: runtime.Version(), OS: runtime.GOOS, Architecture: runtime.GOARCH, CPUCount: runtime.NumCPU(), Capabilities: append([]string(nil), capabilities...)}
 		return json.Marshal(result)
 	})
 }
@@ -354,6 +372,16 @@ func (d *OperationDispatcher) handleRequest(ctx context.Context, event AgentEven
 	if timeout > remaining {
 		timeout = remaining
 	}
+	if request.OutputLimitBytes == 0 {
+		request.OutputLimitBytes = int64(d.config.MaxOutputBytes)
+	}
+	minimumOutputLimit := int64(1)
+	if request.Capability == executionv1.CapabilityCommand || request.Capability == executionv1.CapabilityScript {
+		minimumOutputLimit = minimumExecutionOutputBytes
+	}
+	if request.OutputLimitBytes < minimumOutputLimit || request.OutputLimitBytes > int64(d.config.MaxOutputBytes) {
+		return &InvalidAgentEventError{reason: "operation output limit is outside the locally configured range"}
+	}
 
 	d.mu.Lock()
 	if !d.started || !d.accepting {
@@ -375,6 +403,7 @@ func (d *OperationDispatcher) handleRequest(ctx context.Context, event AgentEven
 		return d.publishSimpleResult(ctx, event, request.OperationID, request.Capability, OperationStatusRejected, "operation_queue_full")
 	}
 	opCtx, cancel := context.WithTimeout(d.ctx, timeout)
+	opCtx = context.WithValue(opCtx, executionOutputLimitKey{}, int(request.OutputLimitBytes))
 	op := &queuedOperation{request: request, event: event, capability: capability, ctx: opCtx, cancel: cancel, acceptedAt: time.Now().UTC()}
 	d.records[request.OperationID] = operationRecord{status: OperationStatusAccepted, cancel: cancel}
 	d.rememberLocked(request.OperationID)
@@ -451,6 +480,9 @@ func decodeOperationRequest(payload json.RawMessage, maxInput int) (OperationReq
 	if request.TimeoutMilli < 0 || request.TimeoutMilli > maxOperationTimeout.Milliseconds() {
 		return OperationRequestPayload{}, &InvalidAgentEventError{reason: "operation timeout is outside the supported range"}
 	}
+	if request.OutputLimitBytes < 0 || request.OutputLimitBytes > maxOperationOutputBytes {
+		return OperationRequestPayload{}, &InvalidAgentEventError{reason: "operation output limit is outside the supported range"}
+	}
 	return request, nil
 }
 
@@ -491,6 +523,11 @@ func (d *OperationDispatcher) execute(op *queuedOperation) {
 	status := OperationStatusSucceeded
 	code := ""
 	if err != nil {
+		var executionErr *CapabilityExecutionError
+		hasExecutionResult := errors.As(err, &executionErr)
+		if hasExecutionResult {
+			output = executionErr.Output
+		}
 		switch {
 		case errors.Is(op.ctx.Err(), context.DeadlineExceeded):
 			status, code = OperationStatusTimedOut, "operation_timeout"
@@ -498,15 +535,19 @@ func (d *OperationDispatcher) execute(op *queuedOperation) {
 			status, code = OperationStatusCancelled, "operation_cancelled"
 		default:
 			if errors.Is(err, errCapabilityPanicked) {
-				status, code = OperationStatusFailed, "capability_panicked"
+				status, code, output = OperationStatusFailed, "capability_panicked", nil
+			} else if hasExecutionResult {
+				status, code = OperationStatusFailed, executionErr.Code
 			} else {
-				status, code = OperationStatusFailed, "capability_execution_failed"
+				status, code, output = OperationStatusFailed, "capability_execution_failed", nil
 			}
 		}
-		output = nil
+		if len(output) > 0 && (!json.Valid(output) || len(output) > int(op.request.OutputLimitBytes)) {
+			status, code, output = OperationStatusFailed, "operation_output_exceeded_limit", nil
+		}
 	} else if len(output) == 0 || !json.Valid(output) {
 		status, code, output = OperationStatusFailed, "capability_returned_invalid_json", nil
-	} else if len(output) > d.config.MaxOutputBytes {
+	} else if len(output) > int(op.request.OutputLimitBytes) {
 		status, code, output = OperationStatusFailed, "operation_output_exceeded_limit", nil
 	}
 	d.complete(op, status, code, output, started)
@@ -742,10 +783,28 @@ func (d *OperationDispatcher) Abort(ctx context.Context) error {
 	}
 }
 
-func defaultCapabilityRegistry(agentVersion string) (*CapabilityRegistry, error) {
+func defaultCapabilityRegistry(agentVersion string, config Config) (*CapabilityRegistry, error) {
+	capabilityNames := []string{"runtime.info"}
+	if config.CommandExecutionEnabled {
+		capabilityNames = append(capabilityNames, executionv1.CapabilityCommand, executionv1.CapabilityScript)
+	}
 	registry := NewCapabilityRegistry()
-	if err := registry.Register("runtime.info", RuntimeInfoCapability(agentVersion)); err != nil {
+	if err := registry.Register("runtime.info", runtimeInfoCapability(agentVersion, capabilityNames)); err != nil {
 		return nil, err
+	}
+	if config.CommandExecutionEnabled {
+		commandCapability, scriptCapability, err := NewExecutionCapabilities(ExecutionCapabilityConfig{
+			ShellPath: config.ExecutionShellPath, MaxOutputBytes: config.MaxOperationOutputBytes,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if err := registry.Register(executionv1.CapabilityCommand, commandCapability); err != nil {
+			return nil, err
+		}
+		if err := registry.Register(executionv1.CapabilityScript, scriptCapability); err != nil {
+			return nil, err
+		}
 	}
 	return registry, nil
 }

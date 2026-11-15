@@ -14,7 +14,7 @@ func clearAgentEnv(t *testing.T) {
 		envNATSCredentialsFile, envNATSToken, envNATSUsername, envNATSPassword,
 		envConnectTimeout, envStartupTimeout, envReconnectWait, envReconnectJitter, envDrainTimeout,
 		envAgentStateFile, envAgentEnrollmentToken, envAgentVersion, envRegisterSubject, envLeaseRenewSubject, envRequestTimeout, envEventBufferSize,
-		envOperationWorkers, envOperationQueueSize, envOperationTimeout, envOperationInputLimit, envOperationOutputLimit, envResultPublishTimeout,
+		envOperationWorkers, envOperationQueueSize, envOperationTimeout, envOperationInputLimit, envOperationOutputLimit, envResultPublishTimeout, envExecutionEnabled, envExecutionShellPath,
 	}
 	for _, key := range keys {
 		t.Setenv(key, "")
@@ -41,11 +41,32 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.EventBufferSize != defaultEventBufferSize {
 		t.Fatalf("EventBufferSize = %d, want %d", cfg.EventBufferSize, defaultEventBufferSize)
 	}
+	if cfg.CommandExecutionEnabled {
+		t.Fatal("command execution must be disabled by default")
+	}
+	if cfg.ExecutionShellPath != "/bin/sh" {
+		t.Fatalf("ExecutionShellPath = %q", cfg.ExecutionShellPath)
+	}
 	if cfg.OperationWorkers != defaultOperationWorkers || cfg.OperationQueueSize != defaultOperationQueue {
 		t.Fatalf("unexpected operation defaults: workers=%d queue=%d", cfg.OperationWorkers, cfg.OperationQueueSize)
 	}
 	if cfg.IdentityFile != "./data/agent/identity.json" {
 		t.Fatalf("IdentityFile = %q", cfg.IdentityFile)
+	}
+}
+
+func TestLoadConfigEnablesCommandExecutionOnlyWhenExplicitlyRequested(t *testing.T) {
+	clearAgentEnv(t)
+	t.Setenv(envAgentNATSURL, "nats://127.0.0.1:4222")
+	t.Setenv(envExecutionEnabled, "true")
+	t.Setenv(envExecutionShellPath, "/bin/sh")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if !cfg.CommandExecutionEnabled {
+		t.Fatal("CommandExecutionEnabled = false, want true")
 	}
 }
 
@@ -120,6 +141,28 @@ func TestConfigRejectsURLCredentials(t *testing.T) {
 	}
 }
 
+func TestConfigExecutionRequiresReasonableOutputLimitAndAbsoluteShell(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{name: "small output", mutate: func(c *Config) {
+			c.CommandExecutionEnabled = true
+			c.MaxOperationOutputBytes = minimumExecutionOutputBytes - 1
+		}},
+		{name: "relative shell", mutate: func(c *Config) { c.CommandExecutionEnabled = true; c.ExecutionShellPath = "sh" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := validTestConfig()
+			test.mutate(&cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("Validate() succeeded for invalid command execution configuration")
+			}
+		})
+	}
+}
+
 func validTestConfig() Config {
 	return Config{
 		Environment:             "test",
@@ -142,6 +185,7 @@ func validTestConfig() Config {
 		AgentVersion:            "test",
 		RegistrationSubject:     "machinarchy.v1.agent.register",
 		LeaseRenewSubject:       "machinarchy.v1.agent.lease.renew",
+		ExecutionShellPath:      "/bin/sh",
 	}
 }
 
