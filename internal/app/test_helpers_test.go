@@ -8,7 +8,7 @@ import (
 	"github.com/machinarchy/machinarchy-agent/internal/config"
 	"github.com/machinarchy/machinarchy-agent/internal/events"
 	"github.com/machinarchy/machinarchy-agent/internal/identity"
-	agentv1 "github.com/machinarchy/machinarchy-protocol/agent/v1"
+	agentv1 "github.com/machinarchy/machinarchy-agent/protocol/agent/v1"
 )
 
 func appTestConfig() config.Config {

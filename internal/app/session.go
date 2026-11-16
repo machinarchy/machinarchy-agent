@@ -16,7 +16,7 @@ import (
 	agentidentity "github.com/machinarchy/machinarchy-agent/internal/identity"
 	"github.com/machinarchy/machinarchy-agent/internal/operations"
 	agenttransport "github.com/machinarchy/machinarchy-agent/internal/transport"
-	agentv1 "github.com/machinarchy/machinarchy-protocol/agent/v1"
+	agentv1 "github.com/machinarchy/machinarchy-agent/protocol/agent/v1"
 )
 
 // Session manages control-plane identity registration and lease heartbeats.
@@ -222,7 +222,7 @@ func (s *AgentSession) Run(ctx context.Context, conn agenttransport.Connection, 
 	}
 
 	retryDelay := 2 * time.Second
-	timer := time.NewTimer(identity.heartbeatInterval())
+	timer := time.NewTimer(identity.HeartbeatInterval())
 	defer timer.Stop()
 
 	for {
@@ -267,7 +267,7 @@ func (s *AgentSession) Run(ctx context.Context, conn agenttransport.Connection, 
 					if !isRetryable(renewErr) {
 						return renewErr
 					}
-					deadline, deadlineErr := retryDelayBeforeExpiry(retryDelay, identity.heartbeatInterval(), identity.LeaseExpiresAt)
+					deadline, deadlineErr := retryDelayBeforeExpiry(retryDelay, identity.HeartbeatInterval(), identity.LeaseExpiresAt)
 					if deadlineErr != nil {
 						return deadlineErr
 					}
@@ -284,7 +284,7 @@ func (s *AgentSession) Run(ctx context.Context, conn agenttransport.Connection, 
 					return fmt.Errorf("resume agent event delivery after reconnect: %w", resumeErr)
 				}
 				retryDelay = 2 * time.Second
-				resetTimer(timer, identity.heartbeatInterval())
+				resetTimer(timer, identity.HeartbeatInterval())
 			case agenttransport.EventAsyncError:
 				if event.Err != nil {
 					s.logger.Warn("asynchronous broker error", "error", event.Err)
@@ -304,7 +304,7 @@ func (s *AgentSession) Run(ctx context.Context, conn agenttransport.Connection, 
 				if !isRetryable(renewErr) {
 					return renewErr
 				}
-				deadline, deadlineErr := retryDelayBeforeExpiry(retryDelay, identity.heartbeatInterval(), identity.LeaseExpiresAt)
+				deadline, deadlineErr := retryDelayBeforeExpiry(retryDelay, identity.HeartbeatInterval(), identity.LeaseExpiresAt)
 				if deadlineErr != nil {
 					return deadlineErr
 				}
@@ -321,7 +321,7 @@ func (s *AgentSession) Run(ctx context.Context, conn agenttransport.Connection, 
 				return fmt.Errorf("resume agent event delivery after heartbeat: %w", resumeErr)
 			}
 			retryDelay = 2 * time.Second
-			resetTimer(timer, identity.heartbeatInterval())
+			resetTimer(timer, identity.HeartbeatInterval())
 		}
 	}
 }
@@ -374,7 +374,7 @@ func (s *AgentSession) renewWithRetry(ctx context.Context, client controlplane.C
 		if !isRetryable(err) {
 			return agentidentity.AgentIdentity{}, err
 		}
-		wait, waitErr := retryDelayBeforeExpiry(delay, identity.heartbeatInterval(), identity.LeaseExpiresAt)
+		wait, waitErr := retryDelayBeforeExpiry(delay, identity.HeartbeatInterval(), identity.LeaseExpiresAt)
 		if waitErr != nil {
 			return agentidentity.AgentIdentity{}, waitErr
 		}
@@ -382,7 +382,7 @@ func (s *AgentSession) renewWithRetry(ctx context.Context, client controlplane.C
 		if err := waitContext(ctx, wait); err != nil {
 			return agentidentity.AgentIdentity{}, err
 		}
-		delay = nextRetryDelay(delay, identity.heartbeatInterval())
+		delay = nextRetryDelay(delay, identity.HeartbeatInterval())
 	}
 }
 
@@ -492,10 +492,6 @@ func (s *AgentSession) renew(ctx context.Context, client controlplane.ControlPla
 	}
 	s.logger.Debug("agent lease renewed", "agent_id", identity.AgentID, "lease_expires_at", identity.LeaseExpiresAt)
 	return identity, nil
-}
-
-func (i agentidentity.AgentIdentity) heartbeatInterval() time.Duration {
-	return time.Duration(i.HeartbeatIntervalMillis) * time.Millisecond
 }
 
 func isInvalidAgentEvent(err error) bool {

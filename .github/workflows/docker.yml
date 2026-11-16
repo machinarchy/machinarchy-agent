@@ -69,18 +69,13 @@ jobs:
 
       - name: Build image (pull requests)
         if: github.event_name == 'pull_request'
-        env:
-          MACHINARCHY_PROTOCOL_READ_TOKEN: ${{ secrets.MACHINARCHY_PROTOCOL_READ_TOKEN }}
         run: |
           docker buildx build --platform linux/amd64 \
-            --secret id=protocol_token,env=MACHINARCHY_PROTOCOL_READ_TOKEN \
             --build-arg VERSION=pr-${{ github.event.number }} \
             --tag machinarchy-agent:ci --load .
 
       - name: Build and push image
         if: github.event_name != 'pull_request'
-        env:
-          MACHINARCHY_PROTOCOL_READ_TOKEN: ${{ secrets.MACHINARCHY_PROTOCOL_READ_TOKEN }}
         run: |
           TAG_ARGS=(--tag '${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}')
           # Only stable semver releases may move the default latest tag.
@@ -88,7 +83,6 @@ jobs:
             TAG_ARGS+=(--tag '${{ steps.meta.outputs.image }}:latest')
           fi
           docker buildx build --platform linux/amd64,linux/arm64 \
-            --secret id=protocol_token,env=MACHINARCHY_PROTOCOL_READ_TOKEN \
             --build-arg VERSION='${{ steps.meta.outputs.tag }}' \
             --build-arg COMMIT='${{ github.sha }}' \
             "${TAG_ARGS[@]}" \

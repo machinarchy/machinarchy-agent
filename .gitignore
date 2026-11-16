@@ -1,31 +1,58 @@
-# Local configuration and credentials
+# ==============================================================================
+# Machinarchy Production .gitignore (Blacklist Strategy)
+# ==============================================================================
+
+# 1. Binaries, Build Outputs & Test Artifacts
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.out
+*.test
+*.prof
+*.s
+*.zip
+*.patch
+
+# 2. Databases & Local Runtime Data
+/data/
+*.db
+*.db-shm
+*.db-wal
+
+# 3. Secrets & Environment Files
 .env
 .env.*
 !.env.example
-*.creds
-*.seed
+
 *.pem
 *.key
+*.cert
+secrets/
+!internal/secrets/
 
-# Go build and test output
-/bin/
-/dist/
-/coverage.out
-/coverage.html
-*.test
-*.prof
+# 4. Logs & Metrics dumps
+*.log
+*.jsonl
+metrics/
 
-# Local runtime state
-/data/
-/identity.json
-/identity.json.*
-
-# Workspace files are local when developing alongside machinarchy-protocol
-go.work
-go.work.sum
-
-# Editors and OS
-.DS_Store
+# 5. IDEs, Editors & Operating System Junk
 .idea/
 .vscode/
 *.swp
+*.swo
+.DS_Store
+Thumbs.db
+.history/
+
+# 6. Go Workspace and Vendor (if using local vendor caching)
+# vendor/
+go.work
+go.work.sum
+
+# Coverage
+/coverage.out
+/coverage.html

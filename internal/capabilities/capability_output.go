@@ -14,6 +14,17 @@ type CapabilityError struct {
 	cause  error
 }
 
+// NewCapabilityError creates a normalized capability failure for a partial
+// execution result. The underlying cause remains private and is not exposed by
+// Error(). Output is copied so callers cannot mutate the retained result.
+func NewCapabilityError(code string, output json.RawMessage, cause error) *CapabilityError {
+	return &CapabilityError{
+		Code:   code,
+		Output: append(json.RawMessage(nil), output...),
+		cause:  cause,
+	}
+}
+
 func (e *CapabilityError) Error() string {
 	return "capability execution failed"
 }

@@ -16,7 +16,7 @@ import (
 	agentconfig "github.com/machinarchy/machinarchy-agent/internal/config"
 	"github.com/machinarchy/machinarchy-agent/internal/events"
 	"github.com/machinarchy/machinarchy-agent/internal/identity"
-	agentv1 "github.com/machinarchy/machinarchy-protocol/agent/v1"
+	agentv1 "github.com/machinarchy/machinarchy-agent/protocol/agent/v1"
 )
 
 const (
@@ -351,11 +351,11 @@ func (d *OperationDispatcher) Handle(ctx context.Context, event events.AgentEven
 		return err
 	}
 	switch event.EventType {
-	case AgentEventOperationRequested:
+	case events.AgentEventOperationRequested:
 		return d.handleRequest(ctx, event)
-	case AgentEventOperationCancelled:
+	case events.AgentEventOperationCancelled:
 		return d.handleCancellation(ctx, event)
-	case AgentEventOperationResultAcknowledged:
+	case events.AgentEventOperationResultAcknowledged:
 		return d.handleResultAcknowledgement(ctx, event)
 	default:
 		return events.NewInvalidAgentEventError("unsupported operation event type")
@@ -681,7 +681,7 @@ func (d *OperationDispatcher) execute(op *queuedOperation) {
 	status := OperationStatusSucceeded
 	code := ""
 	if err != nil {
-		var capabilityErr *CapabilityError
+		var capabilityErr *capabilities.CapabilityError
 		hasExecutionResult := errors.As(err, &capabilityErr)
 		if hasExecutionResult {
 			output = capabilityErr.Output
@@ -1029,4 +1029,15 @@ func ensureJSONEOF(decoder *json.Decoder) error {
 		return err
 	}
 	return nil
+}
+
+func waitContext(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }

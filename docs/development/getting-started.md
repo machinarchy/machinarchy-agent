@@ -5,37 +5,32 @@
 - Go 1.26+
 - Git
 - NATS Server for transport integration tests
-- The `machinarchy-protocol` repository at a sibling path for local workspace
-  development
 
-## Local workspace
+## Clone and verify
 
 ```bash
-mkdir -p ~/src/machinarchy
-cd ~/src/machinarchy
 git clone git@github.com:machinarchy/machinarchy-agent.git
-git clone git@github.com:machinarchy/machinarchy-protocol.git
-go work init ./machinarchy-agent ./machinarchy-protocol
 cd machinarchy-agent
-go mod tidy
 go mod download
 make check
+make verify-isolated
 ```
 
-The Go workspace selects the checked-out local protocol module. Without a
-workspace, the agent resolves the protocol version pinned in `go.mod` from the
-module proxy or Git. Commit the resulting `go.sum`; it is part of the dependency
-integrity lock for this application. For a private protocol repository, set
-`GOPRIVATE=github.com/machinarchy/machinarchy-protocol` and configure a
-read-only GitHub credential. In this repository's GitHub Actions secrets, set
-`MACHINARCHY_PROTOCOL_READ_TOKEN` to a fine-grained token (or GitHub App token)
-with read-only contents access to the protocol repository. The workflow uses
-it only for module download; do not grant write access.
+The shared protocol contracts are included in `protocol/` as a nested Go
+module. The Agent root module uses a local `replace` directive to test against
+that source. No sibling checkout, `go.work` file, private protocol repository
+credential, or `GOPRIVATE` setting is required for the protocol module.
+
+The protocol module remains independently consumable by the controller. Its
+module path is `github.com/machinarchy/machinarchy-agent/protocol`; publish
+protocol releases with `protocol/vX.Y.Z` Git tags. See
+[`../protocol/compatibility.md`](../protocol/compatibility.md) for the
+controller migration and compatibility requirements.
 
 ## Run
 
 The runtime needs a live controller implementing the registration and lease
-request/reply contract. Starting only a NATS server will not make the agent
+request/reply contract. Starting only a NATS server will not make the Agent
 ready. Configure the NATS endpoint and an enrollment token, then run:
 
 ```bash
@@ -54,5 +49,7 @@ make test
 make test-race
 make vet
 make build
-make verify-isolated
+make check
 ```
+
+These root targets include the nested protocol module where appropriate.

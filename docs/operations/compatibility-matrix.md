@@ -5,7 +5,7 @@ compatible merely because both compile.
 
 | Controller release | Agent release | Protocol module | Status | Notes |
 |---|---|---|---|---|
-| Not yet verified | Agent OS-management MVP (unreleased) | `v0.2.3` | Not production-approved | Requires controller support for protocol v2, per-Agent JetStream consumers, durable DB outbox publication, `unknown` status, persist-before-ack result handling, shared `hostfacts/v1` ingestion, and authorization/auditing for `service.status` and `service.control` |
+| Not yet verified | Agent OS-management MVP (unreleased) | `protocol/v0.1.0` (planned first nested-module tag; wire v2) | Not production-approved | Requires controller support for protocol v2, per-Agent JetStream consumers, durable DB outbox publication, `unknown` status, persist-before-ack result handling, shared `hostfacts/v1` ingestion, and authorization/auditing for `service.status` and `service.control` |
 
 Update this file only after running the controller -> agent -> controller
 integration suite against the tagged releases and the actual NATS ACL model.

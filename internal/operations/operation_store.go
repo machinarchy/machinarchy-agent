@@ -583,14 +583,3 @@ func cloneOperationResult(result *OperationResult) *OperationResult {
 }
 
 var _ OperationStore = (*FileOperationStore)(nil)
-
-func ensureJSONEOF(decoder *json.Decoder) error {
-	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
-		if err == nil {
-			return errors.New("multiple JSON values are not allowed")
-		}
-		return err
-	}
-	return nil
-}

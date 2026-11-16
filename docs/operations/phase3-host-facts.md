@@ -55,4 +55,4 @@ and must be implemented separately.
 
 ## Shared contract
 
-The response DTOs are aliases to `github.com/machinarchy/machinarchy-protocol/hostfacts/v1`. The Agent validates the collected values against this shared contract before encoding output. The controller must use the same `hostfactsv1.Decode` function when admitting results into inventory.
+The response DTOs are aliases to `github.com/machinarchy/machinarchy-agent/protocol/hostfacts/v1`. The Agent validates the collected values against this shared contract before encoding output. The controller must use the same `hostfactsv1.Decode` function when admitting results into inventory.

@@ -8,7 +8,7 @@ import (
 	"github.com/machinarchy/machinarchy-agent/internal/capabilities"
 	"github.com/machinarchy/machinarchy-agent/internal/events"
 	"github.com/machinarchy/machinarchy-agent/internal/identity"
-	agentv1 "github.com/machinarchy/machinarchy-protocol/agent/v1"
+	agentv1 "github.com/machinarchy/machinarchy-agent/protocol/agent/v1"
 	"io"
 	"log/slog"
 	"strings"
@@ -547,7 +547,7 @@ func TestOperationDispatcherPreservesNormalizedCapabilityFailureOutput(t *testin
 	registry := capabilities.NewRegistry()
 	partial := json.RawMessage(`{"partial":true}`)
 	if err := registry.Register("test.partial", capabilities.CapabilityFunc(func(context.Context, json.RawMessage) (json.RawMessage, error) {
-		return partial, &CapabilityError{Code: "service_action_failed", Output: partial, cause: errors.New("sensitive local error")}
+		return partial, capabilities.NewCapabilityError("service_action_failed", partial, errors.New("sensitive local error"))
 	})); err != nil {
 		t.Fatal(err)
 	}

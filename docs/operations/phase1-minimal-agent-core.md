@@ -17,7 +17,7 @@ lifecycle; do not add new management domains.
 
 Generic `exec.command` and `exec.script` are not registered or implemented by
 the Agent. A legacy `MACHINARCHY_AGENT_EXECUTION_ENABLED=true` setting is
-rejected at startup with a clear migration error. The shared protocol repository may retain `execution/v1` contracts for the
+rejected at startup with a clear migration error. The shared `protocol/` module may retain `execution/v1` contracts for the
 controller's independent SSH transport. That shared contract does not
 add shell execution to the Agent.
 

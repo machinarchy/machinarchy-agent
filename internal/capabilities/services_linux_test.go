@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	servicesv1 "github.com/machinarchy/machinarchy-protocol/services/v1"
+	servicesv1 "github.com/machinarchy/machinarchy-agent/protocol/services/v1"
 )
 
 func writeFakeSystemctl(t *testing.T, body string) string {
@@ -175,23 +175,23 @@ func TestDefaultCapabilityRegistryAddsServicesOnlyWhenConfigured(t *testing.T) {
 	config.AllowedServices = []string{"nginx.service"}
 	config.SystemctlPath = path
 
-	registry, err := defaultCapabilityRegistry("test", config)
+	registry, err := NewDefaultRegistry("test", config)
 	if err != nil {
-		t.Fatalf("defaultCapabilityRegistry(status) error = %v", err)
+		t.Fatalf("NewDefaultRegistry(status) error = %v", err)
 	}
 	if got := strings.Join(registry.Names(), ","); got != "runtime.info,service.status,system.facts" {
 		t.Fatalf("status-only capabilities = %q", got)
 	}
 
 	config.ServiceControlEnabled = true
-	registry, err = defaultCapabilityRegistry("test", config)
+	registry, err = NewDefaultRegistry("test", config)
 	if err != nil {
-		t.Fatalf("defaultCapabilityRegistry(control) error = %v", err)
+		t.Fatalf("NewDefaultRegistry(control) error = %v", err)
 	}
 	if got := strings.Join(registry.Names(), ","); got != "runtime.info,service.control,service.status,system.facts" {
 		t.Fatalf("service control capabilities = %q", got)
 	}
-	info, ok := registry.lookup("runtime.info")
+	info, ok := registry.Lookup("runtime.info")
 	if !ok {
 		t.Fatal("runtime.info capability missing")
 	}

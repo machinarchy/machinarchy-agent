@@ -39,6 +39,11 @@ type AgentIdentity struct {
 	HeartbeatIntervalMillis int64  `json:"heartbeat_interval_ms,omitempty"`
 }
 
+// HeartbeatInterval returns the controller-assigned heartbeat interval.
+func (i AgentIdentity) HeartbeatInterval() time.Duration {
+	return time.Duration(i.HeartbeatIntervalMillis) * time.Millisecond
+}
+
 func (i AgentIdentity) Registered() bool {
 	return i.AgentID != "" && i.HostID != "" && i.LeaseID != "" && i.LeaseToken != "" && i.LeaseExpiresAt != ""
 }

@@ -20,13 +20,15 @@ protocol dependencies and authority boundaries must be updated.
 Imports must target the owning package in this repository; there is no
 replacement catch-all `internal/agent` import path. Replace the monolith's
 internal event contract import with
-`github.com/machinarchy/machinarchy-protocol/agent/v1`.
+`github.com/machinarchy/machinarchy-agent/protocol/agent/v1`.
 
-## Move to `machinarchy-protocol`
+## Shared protocol module
 
 Move the transport-neutral contract sources from the monolith's
-`internal/eventing/agentv1` package into the public `agent/v1` package in the
-protocol repository. Both applications import this module.
+`internal/eventing/agentv1` package into the public `protocol/agent/v1` package
+in this repository. The controller imports the independently versioned nested
+module `github.com/machinarchy/machinarchy-agent/protocol`; it must not import
+Agent runtime packages.
 
 ## Keep in `machinarchy`
 
@@ -47,7 +49,8 @@ this repository.
 
 ## Update the controller repository
 
-1. Add `github.com/machinarchy/machinarchy-protocol` as a dependency.
+1. Add `github.com/machinarchy/machinarchy-agent/protocol` as a dependency
+   at the selected `protocol/vX.Y.Z` release.
 2. Replace the controller's private `internal/eventing/agentv1` definitions
    only after confirming the protocol contract against accepted ADRs.
 3. Keep existing controller broker connection management; do not create a
@@ -69,7 +72,7 @@ controller/agent/protocol compatibility combinations.
 
 ## Rollout order
 
-1. Publish and verify the protocol module.
+1. Publish and verify a `protocol/vX.Y.Z` release from this repository.
 2. Deploy controller support for that protocol version.
 3. Publish the agent binary/container using the same protocol version.
 4. Enroll a non-production test host and verify renewal/event/result lifecycle.

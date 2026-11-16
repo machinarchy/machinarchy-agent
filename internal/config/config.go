@@ -11,13 +11,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/machinarchy/machinarchy-protocol/agent/v1"
-	servicesv1 "github.com/machinarchy/machinarchy-protocol/services/v1"
+	"github.com/machinarchy/machinarchy-agent/protocol/agent/v1"
+	servicesv1 "github.com/machinarchy/machinarchy-agent/protocol/services/v1"
 )
 
 const (
 	MaxAllowedServices      = 64
 	DefaultEventBufferSize  = 64
+	MaxEventBufferSize      = 256
 	DefaultOperationWorkers = 4
 	DefaultOperationQueue   = 64
 	MaxOperationWorkers     = 64
@@ -28,6 +29,7 @@ const (
 
 	maxAllowedServices          = MaxAllowedServices
 	defaultEventBufferSize      = DefaultEventBufferSize
+	maxEventBufferSize          = MaxEventBufferSize
 	defaultOperationWorkers     = DefaultOperationWorkers
 	defaultOperationQueue       = DefaultOperationQueue
 	maxOperationWorkers         = MaxOperationWorkers

@@ -2,13 +2,15 @@
 
 ## Project boundary
 
-This repository contains the Machinarchy Agent runtime only. It must not own
-controller persistence, workspace/RBAC policy, host inventory, enrollment
-issuance, authoritative leases, or controller-side operation state.
+This repository contains the Machinarchy Agent runtime and the shared,
+transport-neutral protocol contracts consumed by the Agent and controller.
+The public contracts live in `protocol/`, which is an independently versioned
+nested Go module. Keep the module boundary; do not make the controller depend
+on Agent runtime packages.
 
-Shared wire contracts belong to `github.com/machinarchy/machinarchy-protocol`.
-Do not duplicate those DTOs inside this repository or import packages from the
-controller's `internal/` tree.
+The Agent must not own controller persistence, workspace/RBAC policy,
+authoritative host inventory, enrollment issuance, authoritative leases, or
+controller-side operation state.
 
 ## Current Agent product scope
 
@@ -19,7 +21,8 @@ Do not add generic `exec.command` / `exec.script`, package management, file
 management, users/groups, firewall, network configuration, Kubernetes, or
 monitoring features without an explicit product-scope decision. The shared
 protocol may retain contracts used by the controller's independent SSH
-transport; that does not authorize registering those capabilities in this Agent.
+transport; that does not authorize registering those capabilities in this
+Agent.
 
 ## Engineering requirements
 
@@ -29,7 +32,17 @@ transport; that does not authorize registering those capabilities in this Agent.
   Configuration, control-plane logic, identity persistence, event processing,
   operation dispatch/persistence, and OS capabilities belong in their
   corresponding cohesive `internal/` packages.
-- Do not recreate a catch-all `internal/agent` package. Keep package boundaries small and responsibility-based, and avoid dependency cycles.
+- Do not recreate a catch-all `internal/agent` package. Keep package boundaries
+  small and responsibility-based, and avoid dependency cycles.
+- `protocol/` is a separate Go module inside this repository. Its packages are
+  public shared contracts, not Agent implementation. Keep it standard-library
+  only unless an ADR justifies a dependency. Do not import NATS, databases,
+  HTTP, SSH, controller internals or Agent runtime code from the protocol.
+- Treat JSON names, enum values, subject formats, validation rules and
+  protocol limits as compatibility-critical APIs. Add contract tests for wire
+  changes and document the controller migration impact.
+- Protocol module releases use `protocol/vX.Y.Z` Git tags. Agent binary/module
+  releases use root `vX.Y.Z` tags. These version streams are independent.
 - Treat all broker input as untrusted.
 - Never implement unrestricted remote shell execution as a default capability.
 - Every capability must be explicitly registered, validated, bounded, and cancellable.
@@ -63,5 +76,6 @@ make vet
 make build
 ```
 
+These root targets include the nested `protocol/` module where appropriate.
 For integration changes, run real NATS tests and controller/agent end-to-end
 tests. The isolated test harness is not a substitute for those tests.

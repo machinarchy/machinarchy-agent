@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	servicesv1 "github.com/machinarchy/machinarchy-protocol/services/v1"
+	servicesv1 "github.com/machinarchy/machinarchy-agent/protocol/services/v1"
 )
 
 type systemdServiceManager struct {

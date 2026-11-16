@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/machinarchy/machinarchy-agent/internal/config"
-	servicesv1 "github.com/machinarchy/machinarchy-protocol/services/v1"
+	servicesv1 "github.com/machinarchy/machinarchy-agent/protocol/services/v1"
 )
 
 // NewDefaultRegistry builds only the Agent's approved baseline capabilities

@@ -64,8 +64,9 @@ credential only to authenticate renewals; it cannot mint or extend its own
 lease.
 
 The controller's `internal/` packages are not imported by this repository.
-The only cross-repository Go dependency for application-level messages is the
-public `machinarchy-protocol` module.
+Both applications consume the public contracts in the nested `protocol/` Go
+module; the protocol code is physically maintained in this repository but is
+released independently for controller use.
 
 ## Transport
 

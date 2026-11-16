@@ -13,7 +13,7 @@ import (
 
 	"github.com/machinarchy/machinarchy-agent/internal/config"
 	"github.com/machinarchy/machinarchy-agent/internal/identity"
-	agentv1 "github.com/machinarchy/machinarchy-protocol/agent/v1"
+	agentv1 "github.com/machinarchy/machinarchy-agent/protocol/agent/v1"
 )
 
 const (
@@ -22,7 +22,7 @@ const (
 	maxAgentEventBytes        = MaxAgentEventBytes
 	maxPendingAgentEventBytes = 16 * 1024 * 1024
 	defaultEventBufferSize    = config.DefaultEventBufferSize
-	MaxEventBufferSize        = 256
+	MaxEventBufferSize        = config.MaxEventBufferSize
 	maxEventBufferSize        = MaxEventBufferSize
 	maxEventLifetime          = 24 * time.Hour
 	maxEventClockSkew         = 2 * time.Minute

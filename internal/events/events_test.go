@@ -274,13 +274,13 @@ func TestFileEventLedgerRejectsSymlink(t *testing.T) {
 }
 
 func TestAgentEventProcessorRejectsExpiredLease(t *testing.T) {
-	identity := validTestIdentity()
-	identity.LeaseExpiresAt = time.Now().Add(-time.Second).UTC().Format(time.RFC3339Nano)
-	processor, err := NewAgentEventProcessor(identity, &memoryEventLedger{seen: make(map[string]bool)}, AgentEventHandlerFunc(func(context.Context, AgentEventEnvelope) error { return nil }), nil)
+	agentIdentity := validTestIdentity()
+	agentIdentity.LeaseExpiresAt = time.Now().Add(-time.Second).UTC().Format(time.RFC3339Nano)
+	processor, err := NewAgentEventProcessor(agentIdentity, &memoryEventLedger{seen: make(map[string]bool)}, AgentEventHandlerFunc(func(context.Context, AgentEventEnvelope) error { return nil }), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	event := validTestEvent(identity, time.Now())
+	event := validTestEvent(agentIdentity, time.Now())
 	if err := processor.Handle(context.Background(), encodeTestEvent(t, event)); !errors.Is(err, identity.ErrLeaseExpired) {
 		t.Fatalf("Handle() error = %v, want identity.ErrLeaseExpired", err)
 	}

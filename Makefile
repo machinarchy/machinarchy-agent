@@ -2,31 +2,43 @@ SHELL := /usr/bin/env bash
 GO ?= go
 BIN_DIR ?= bin
 BIN_NAME := machinarchy-agent
+PROTOCOL_DIR := protocol
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
 BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -s -w -X main.Version=$(VERSION) -X main.Commit=$(COMMIT) -X main.BuildTime=$(BUILD_TIME)
+GO_FILES := $(shell find cmd internal protocol -name '*.go' -type f)
 
-.PHONY: help fmt fmt-check test test-race vet build run check verify-isolated deployment-check clean docker-build
+.PHONY: help fmt fmt-check test test-race vet build run check verify-isolated deployment-check protocol-test protocol-test-race protocol-vet clean docker-build
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*##"}; /^[a-zA-Z0-9_-]+:.*##/ {printf "%-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-fmt: ## Format Go sources
+fmt: ## Format Agent and protocol Go sources
 	$(GO) fmt ./...
+	cd $(PROTOCOL_DIR) && $(GO) fmt ./...
 
-fmt-check: ## Fail when Go sources are not gofmt formatted
-	@test -z "$$($(GO)fmt -l $$(find cmd internal -name '*.go' -type f))" || { \
+fmt-check: ## Fail when Agent or protocol Go sources are not gofmt formatted
+	@test -z "$$($(GO)fmt -l $(GO_FILES))" || { \
 		echo "Go files need gofmt. Run make fmt." >&2; exit 1; }
 
-test: ## Run unit tests
+test: protocol-test ## Run unit tests for the Agent and protocol modules
 	$(GO) test -count=1 ./...
 
-test-race: ## Run race-enabled tests
+protocol-test: ## Run shared protocol module unit tests
+	cd $(PROTOCOL_DIR) && $(GO) test -count=1 ./...
+
+test-race: protocol-test-race ## Run race-enabled tests for both modules
 	$(GO) test -race -count=1 ./...
 
-vet: ## Run go vet
+protocol-test-race: ## Run protocol module race-enabled tests
+	cd $(PROTOCOL_DIR) && $(GO) test -race -count=1 ./...
+
+vet: protocol-vet ## Run go vet for the Agent and protocol modules
 	$(GO) vet ./...
+
+protocol-vet: ## Run go vet for the protocol module
+	cd $(PROTOCOL_DIR) && $(GO) vet ./...
 
 build: ## Build the agent binary
 	@mkdir -p $(BIN_DIR)
@@ -37,7 +49,7 @@ run: ## Run the agent with environment inherited from the shell
 
 check: fmt-check test test-race vet build deployment-check ## Run all local quality checks
 
-verify-isolated: ## Verify agent source using the isolated NATS API stub harness
+verify-isolated: ## Verify Agent and bundled protocol with the isolated NATS API stub harness
 	./scripts/verify-agent-isolated.sh
 
 deployment-check: ## Validate deployment scripts and release archive packaging
@@ -50,4 +62,4 @@ docker-build: ## Build local container image
 	docker build --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) -t machinarchy-agent:$(VERSION) .
 
 clean: ## Remove local build and test artifacts
-	rm -rf $(BIN_DIR) coverage.out coverage.html
+	rm -rf $(BIN_DIR) dist coverage.out coverage.html

@@ -2,23 +2,24 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PROTOCOL_DIR="${PROTOCOL_DIR:-$(cd "${ROOT_DIR}/../machinarchy-protocol" 2>/dev/null && pwd || true)}"
+PROTOCOL_DIR="${PROTOCOL_DIR:-${ROOT_DIR}/protocol}"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "${WORK_DIR}"' EXIT
 
-mkdir -p "${WORK_DIR}/agent/cmd" "${WORK_DIR}/agent/internal" \
-  "${WORK_DIR}/protocol/agent" "${WORK_DIR}/protocol/execution" "${WORK_DIR}/protocol/hostfacts" "${WORK_DIR}/protocol/services" "${WORK_DIR}/testdeps/nats.go"
-cp -R "${ROOT_DIR}/cmd/machinarchy-agent" "${WORK_DIR}/agent/cmd/"
-cp -R "${ROOT_DIR}/internal/." "${WORK_DIR}/agent/internal/"
-if [[ -z "${PROTOCOL_DIR}" || ! -d "${PROTOCOL_DIR}/agent/v1" ]]; then
-  echo "machinarchy-protocol checkout not found; set PROTOCOL_DIR to its repository path." >&2
+if [[ ! -f "${PROTOCOL_DIR}/go.mod" || ! -d "${PROTOCOL_DIR}/agent/v1" ]]; then
+  echo "Bundled protocol module not found at ${PROTOCOL_DIR}." >&2
   exit 1
 fi
-cp -R "${PROTOCOL_DIR}/agent/v1" "${WORK_DIR}/protocol/agent/"
-cp -R "${PROTOCOL_DIR}/execution/v1" "${WORK_DIR}/protocol/execution/"
-cp -R "${PROTOCOL_DIR}/hostfacts/v1" "${WORK_DIR}/protocol/hostfacts/"
-cp -R "${PROTOCOL_DIR}/services/v1" "${WORK_DIR}/protocol/services/"
-cp -R "${ROOT_DIR}/testsupport/nats.go/." "${WORK_DIR}/testdeps/nats.go/"
+
+mkdir -p "${WORK_DIR}/agent/cmd" "${WORK_DIR}/agent/internal" \
+  "${WORK_DIR}/protocol" "${WORK_DIR}/testdeps/nats.go"
+cp -R "${ROOT_DIR}/cmd/machinarchy-agent" "${WORK_DIR}/agent/cmd/"
+cp -R "${ROOT_DIR}/internal/." "${WORK_DIR}/agent/internal/"
+cp -R "${PROTOCOL_DIR}/agent" "${PROTOCOL_DIR}/execution" \
+  "${PROTOCOL_DIR}/hostfacts" "${PROTOCOL_DIR}/services" "${WORK_DIR}/protocol/"
+cp "${ROOT_DIR}/testsupport/nats.go/go.mod" "${ROOT_DIR}/testsupport/nats.go/nats.go" \
+  "${WORK_DIR}/testdeps/nats.go/"
+cp -R "${ROOT_DIR}/testsupport/nats.go/jetstream" "${WORK_DIR}/testdeps/nats.go/"
 
 cat > "${WORK_DIR}/agent/go.mod" <<'MOD'
 module github.com/machinarchy/machinarchy-agent
@@ -26,16 +27,16 @@ module github.com/machinarchy/machinarchy-agent
 go 1.23
 
 require (
-	github.com/machinarchy/machinarchy-protocol v0.0.0
+	github.com/machinarchy/machinarchy-agent/protocol v0.0.0
 	github.com/nats-io/nats.go v0.0.0
 )
 
-replace github.com/machinarchy/machinarchy-protocol => ../protocol
+replace github.com/machinarchy/machinarchy-agent/protocol => ../protocol
 replace github.com/nats-io/nats.go => ../testdeps/nats.go
 MOD
 
 cat > "${WORK_DIR}/protocol/go.mod" <<'MOD'
-module github.com/machinarchy/machinarchy-protocol
+module github.com/machinarchy/machinarchy-agent/protocol
 
 go 1.23
 MOD
@@ -46,13 +47,13 @@ go test -count=1 ./...
 printf '%s\n' '== shared protocol go vet =='
 go vet ./...
 cd "${WORK_DIR}/agent"
-printf '%s\n' '== unit tests (stub NATS transport) =='
+printf '%s\n' '== Agent unit tests (stub NATS transport) =='
 go test -count=1 ./...
-printf '%s\n' '== race detector =='
+printf '%s\n' '== Agent race detector =='
 go test -race -count=1 ./...
-printf '%s\n' '== go vet =='
+printf '%s\n' '== Agent go vet =='
 go vet ./...
-printf '%s\n' '== build =='
+printf '%s\n' '== Agent build =='
 go build -o "${WORK_DIR}/machinarchy-agent" ./cmd/machinarchy-agent
 printf '%s\n' '== CLI metadata and configuration validation =='
 "${WORK_DIR}/machinarchy-agent" --version

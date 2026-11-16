@@ -1,5 +1,67 @@
 # AI Change Log
 
+## 2026-11-16 — Consolidate shared protocol into the Agent repository
+
+### Changed
+
+- Moved the complete shared protocol source (`agent/v1`, `execution/v1`,
+  `hostfacts/v1`, and `services/v1`) into the `protocol/` directory.
+- Preserved the protocol as an independently versioned nested Go module at
+  `github.com/machinarchy/machinarchy-agent/protocol`; the Agent root module
+  uses a local `replace` directive so one clone contains both source trees.
+- Updated Agent imports to the new module path and added protocol tests, race
+  tests, formatting and vet checks to root Makefile/CI targets.
+- Repaired package-boundary issues exposed by the isolated harness in the
+  prior modularized Agent archive: event-limit ownership, shared JSON EOF
+  helper duplication, event constant references, capability error ownership,
+  retry wait helper visibility, registry test API names and identity test
+  package shadowing. Moved the Agent heartbeat interval method onto the
+  identity package's own type and removed unused imports left by the split.
+- Removed the Agent CI, release and Docker build dependency on a separate
+  private protocol repository and its read token.
+- Added the protocol module README/instructions, repository boundary guidance,
+  controller migration steps and ADR-0006. Retained ADR-0002 as superseded
+  history.
+- Added prefixed protocol module tag guidance (`protocol/vX.Y.Z`) while keeping
+  Agent release tags independent (`vX.Y.Z`).
+
+### Files changed
+
+- `protocol/**`, `go.mod`, `Makefile`, `Dockerfile`,
+  `internal/config/config.go`, `internal/events/events.go`,
+  `internal/operations/**`, `internal/capabilities/**` and related tests.
+- `.github/workflows/ci.yml`, `.github/workflows/release.yml`,
+  `.github/workflows/docker.yml`, `.github/PULL_REQUEST_TEMPLATE.md`.
+- `AGENTS.md`, `CONTRIBUTING.md`, `README.md`, `docs/**`, `.gitignore`,
+  `.env.example`, `scripts/verify-agent-isolated.sh`, `ChangeLogAI.md`,
+  `CHANGELOG.md`.
+
+### Migration requirements
+
+- The controller must update imports from
+  `github.com/machinarchy/machinarchy-protocol/...` to
+  `github.com/machinarchy/machinarchy-agent/protocol/...` and require the first
+  nested module release before the former protocol repository is archived.
+- The new module path's first release is `protocol/v0.1.0`; the wire protocol
+  remains version 2. No serialized payload or subject contract was changed by
+  this repository consolidation.
+
+### Verification
+
+- Passed `make fmt-check`.
+- Passed `make deployment-check` (release packaging/checksum smoke tests,
+  systemd unit verification, and Docker deployment static checks).
+- Passed `GOTOOLCHAIN=local ./scripts/verify-agent-isolated.sh`: nested protocol
+  tests and vet; Agent unit tests, race tests, vet, Linux build, CLI smoke tests,
+  and Windows AMD64 cross-build. The isolated harness uses Go 1.23.2 with a
+  temporary Go directive adjustment and a compile-time NATS API stub. It is
+  useful source-level validation, not proof of compatibility with Go 1.26.0 or
+  the real NATS v1.55.0 client.
+- Full Go 1.26 root and nested-module CI, real NATS/JetStream integration,
+  controller build/tests and controller-Agent end-to-end tests remain pending.
+  The controller repository was not supplied, so its import migration was not
+  performed or validated.
+
 ## 2026-11-16 — Split the Agent catch-all package by responsibility
 
 ### Changed
@@ -61,7 +123,10 @@
 - Restricted Docker `latest` updates to stable SemVer tags; prerelease tags
   remain version-specific. Validated native release tags and mark SemVer
   prereleases as GitHub prereleases.
-- Included both `go.mod` and `go.sum` in GitHub Actions module cache keys.
+- Configured GitHub Actions dependency caching against the root and nested
+  `go.mod` files. The Agent `go.sum` is still missing and must be generated with
+  the real Go 1.26 toolchain/dependencies before release; no checksum was
+  fabricated in this environment.
 - Removed stale transport comments that referred to a controller-side broker
   package not present in this standalone Agent repository.
 

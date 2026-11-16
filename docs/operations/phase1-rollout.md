@@ -5,10 +5,9 @@ protocol-v1 controller.
 
 ## Required release order
 
-1. Review the breaking wire-protocol change in `machinarchy-protocol`.
-2. Use the coordinated protocol v2 release required by the Agent build
-   (currently `machinarchy-protocol` v0.2.3, including the additive
-   `hostfacts/v1` and `services/v1` schemas).
+1. Review the breaking wire-protocol change in the nested `protocol/` module.
+2. Publish/consume the coordinated `protocol/v0.1.0` nested-module release
+   required by the Agent build, including `hostfacts/v1` and `services/v1`.
 3. Update the controller to use the same protocol module and accept the
    `unknown` operation status.
 4. Make controller result ingestion idempotent by `operation_id`. Commit the

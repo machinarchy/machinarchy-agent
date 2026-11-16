@@ -11,8 +11,7 @@ manager:
 | `service.control` | `{"service":"nginx.service","action":"restart"}` | Execute exactly one of `start`, `stop`, or `restart` |
 
 The shared, transport-neutral request/response types live in
-`machinarchy-protocol/services/v1` (protocol module v0.2.3). The Agent protocol
-envelope remains version 2.
+`protocol/services/v1`. The Agent wire protocol envelope remains version 2.
 
 This is not yet a desired-state system. It does not implement `enable`,
 `disable`, `reload`, unit-file changes, dependency ordering, health checks,
@@ -95,7 +94,9 @@ create a new operation after reconciling the actual state.
 
 ## Rollout checklist
 
-1. Publish and consume `machinarchy-protocol` v0.2.3 in both controller and Agent.
+1. Publish the nested module as `protocol/v0.1.0` and update both controller and
+   Agent dependencies to `github.com/machinarchy/machinarchy-agent/protocol`.
+   The wire protocol envelope remains version 2.
 2. Ensure the controller's capability authorization and operation audit model
    understands `service.status` and `service.control`.
 3. Keep service management disabled in the baseline Agent deployment.

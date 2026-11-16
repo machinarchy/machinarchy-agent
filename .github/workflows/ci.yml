@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main]
+    tags: ['protocol/v*']
 
 permissions:
   contents: read
@@ -29,18 +30,7 @@ jobs:
           cache: true
           cache-dependency-path: |
             go.mod
-            go.sum
-
-      - name: Configure optional private protocol module access
-        env:
-          MODULE_TOKEN: ${{ secrets.MACHINARCHY_PROTOCOL_READ_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ -n "${MODULE_TOKEN}" ]]; then
-            echo "GOPRIVATE=github.com/machinarchy/machinarchy-protocol" >> "${GITHUB_ENV}"
-            git config --global url."https://x-access-token:${MODULE_TOKEN}@github.com/".insteadOf "https://github.com/"
-          fi
+            protocol/go.mod
 
       - name: Download modules
         run: go mod download
@@ -48,14 +38,14 @@ jobs:
       - name: Check formatting
         run: make fmt-check
 
-      - name: Unit tests
-        run: go test -count=1 ./...
+      - name: Unit tests (Agent and protocol modules)
+        run: make test
 
-      - name: Race detector
-        run: go test -race -count=1 ./...
+      - name: Race detector (Agent and protocol modules)
+        run: make test-race
 
-      - name: Vet
-        run: go vet ./...
+      - name: Vet (Agent and protocol modules)
+        run: make vet
 
       - name: Build
         run: make build

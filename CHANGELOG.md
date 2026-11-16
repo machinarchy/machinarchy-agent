@@ -1,9 +1,19 @@
 # Changelog
 
+
+## Unreleased
+
+### Changed
+
+- Consolidated the shared wire-contract source into the Agent repository under
+  `protocol/`, retaining it as an independently versioned nested Go module.
+  The Agent wire protocol remains version 2. Controller consumers must migrate
+  to `github.com/machinarchy/machinarchy-agent/protocol` before the former
+  standalone protocol repository is archived.
+
 User-visible changes are documented here. Internal AI-assisted implementation
 notes and file-level details belong in `ChangeLogAI.md`.
 
-## Unreleased
 
 - Added Linux Docker Engine deployment for AMD64 and ARM64 with a non-root,
   read-only, capability-dropped default profile and persistent Agent state.

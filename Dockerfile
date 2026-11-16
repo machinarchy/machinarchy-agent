@@ -9,18 +9,8 @@ ARG TARGETARCH
 
 WORKDIR /src
 COPY go.mod ./
-RUN --mount=type=secret,id=protocol_token,required=false \
-    set -eu; \
-    MODULE_TOKEN=""; \
-    if [ -s /run/secrets/protocol_token ]; then \
-      MODULE_TOKEN="$(cat /run/secrets/protocol_token)"; \
-      export GOPRIVATE=github.com/machinarchy/machinarchy-protocol; \
-      git config --global url."https://x-access-token:${MODULE_TOKEN}@github.com/".insteadOf "https://github.com/"; \
-    fi; \
-    go mod download; \
-    if [ -n "${MODULE_TOKEN}" ]; then \
-      git config --global --unset-all url."https://x-access-token:${MODULE_TOKEN}@github.com/".insteadOf || true; \
-    fi
+COPY protocol/go.mod ./protocol/go.mod
+RUN go mod download
 COPY . .
 RUN mkdir -p /out && CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH:-amd64} \
     go build -trimpath -ldflags="-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.BuildTime=${BUILD_TIME}" \

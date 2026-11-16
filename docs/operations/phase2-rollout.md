@@ -6,9 +6,10 @@ controller/Agent path must be integrated and tested before production use.
 
 ## Required controller work
 
-1. Use the same `machinarchy-protocol` v0.2.3 dependency and protocol v2 wire
-   contracts. The `hostfacts/v1` and `services/v1` schemas are additive and does not bump
-   the Agent event envelope protocol version.
+1. Pin the same nested module release from
+   `github.com/machinarchy/machinarchy-agent/protocol` in the controller and
+   Agent. The wire protocol envelope remains version 2. The `hostfacts/v1` and
+   `services/v1` schemas are additive and do not bump that envelope version.
 2. Create the `MACHINARCHY_AGENT_EVENTS` file-backed stream (or an explicitly
    configured equivalent) with subject `machinarchy.v1.agent.*.events`,
    `WorkQueuePolicy`, bounded message/byte/age limits and `DiscardNewPolicy`.

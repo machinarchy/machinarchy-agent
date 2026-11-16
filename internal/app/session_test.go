@@ -14,7 +14,7 @@ import (
 	"github.com/machinarchy/machinarchy-agent/internal/identity"
 	"github.com/machinarchy/machinarchy-agent/internal/operations"
 	agenttransport "github.com/machinarchy/machinarchy-agent/internal/transport"
-	agentv1 "github.com/machinarchy/machinarchy-protocol/agent/v1"
+	agentv1 "github.com/machinarchy/machinarchy-agent/protocol/agent/v1"
 )
 
 type memoryIdentityStore struct {
@@ -471,9 +471,12 @@ func TestAgentSessionPausesEventConsumptionUntilLeaseRenewedAfterReconnect(t *te
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if !deferredDelivery.acked.Load() {
-		cancel()
-		t.Fatal("agent did not acknowledge the event after reconnect processing")
+	for !deferredDelivery.acked.Load() {
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatal("agent did not acknowledge the event after reconnect processing")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 
 	cancel()

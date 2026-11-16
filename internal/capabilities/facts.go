@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	factsv1 "github.com/machinarchy/machinarchy-protocol/hostfacts/v1"
+	factsv1 "github.com/machinarchy/machinarchy-agent/protocol/hostfacts/v1"
 )
 
 const maxFactsOutputBytes = factsv1.MaxFactsPayloadBytes

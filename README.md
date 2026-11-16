@@ -28,9 +28,11 @@ registered capabilities.
 | Agent operation result publishing | Result ingestion and persistence |
 | Agent packaging and upgrades | Fleet rollout policy |
 
-Shared wire contracts are maintained in the separate
-[`machinarchy-protocol`](https://github.com/machinarchy/machinarchy-protocol)
-Go module. The controller and agent must use a compatible protocol release.
+Shared wire contracts live in the [`protocol/`](protocol/) directory as an
+independently versioned Go module. The controller consumes this module without
+depending on the Agent runtime. The controller and Agent must use a compatible
+protocol release. See [`docs/protocol/compatibility.md`](docs/protocol/compatibility.md)
+for the controller module-path migration and protocol-tag policy.
 The current reliability work uses protocol v2; it is not compatible with a
 protocol-v1 controller. The controller must persist operation results before
 sending the result acknowledgement and must understand the `unknown` status.
@@ -115,9 +117,10 @@ provide generic remote command or shell-script execution. Its initial supported
 capabilities are limited to `runtime.info`, `system.facts`, and explicitly
 configured Linux/systemd `service.status` and `service.control`.
 
-The shared protocol repository may contain transport-neutral execution
-contracts for the controller's SSH implementation. Their presence in the
-shared protocol does not enable or expose those operations through this Agent.
+The `protocol/execution/v1` module contains transport-neutral execution
+contracts also used by the controller's SSH implementation. Their presence in
+the shared protocol does not enable or expose those operations through this
+Agent.
 
 ## Requirements
 
@@ -132,42 +135,35 @@ shared protocol does not enable or expose those operations through this Agent.
 
 ## Quick start
 
-1. Create/update the `machinarchy-protocol` repository from the companion
-   protocol bundle and publish protocol module `v0.2.3` after reviewing the
-   protocol v2 compatibility requirements and additive `hostfacts/v1` and `services/v1` contracts.
-2. Clone both repositories into a sibling workspace:
-
-   ```text
-   projects/
-   ├── machinarchy-agent/
-   └── machinarchy-protocol/
-   ```
-
-3. From the parent directory, create a local Go workspace:
+1. Clone this repository:
 
    ```bash
-   go work init ./machinarchy-agent ./machinarchy-protocol
-   ```
-
-4. Configure the agent:
-
-   ```bash
-   cp machinarchy-agent/.env.example machinarchy-agent/.env
-   # Edit the file and set the broker URL and one-time enrollment token.
-   chmod 600 machinarchy-agent/.env
-   ```
-
-5. Run checks and build:
-
-   ```bash
+   git clone git@github.com:machinarchy/machinarchy-agent.git
    cd machinarchy-agent
-   go mod tidy
+   ```
+
+2. The shared protocol module is included under `protocol/`. The Agent root
+   module uses a local `replace` directive, so no sibling checkout or Go
+   workspace is needed. The controller imports the nested protocol module
+   directly, not the Agent root module.
+
+3. Configure the agent:
+
+   ```bash
+   cp .env.example .env
+   # Edit the file and set the broker URL and one-time enrollment token.
+   chmod 600 .env
+   ```
+
+4. Run checks and build:
+
+   ```bash
    go mod download
    make check
    make build
    ```
 
-6. Run the agent after the controller-side registration, lease and event
+5. Run the agent after the controller-side registration, lease and event
    handlers have been deployed:
 
    ```bash
@@ -201,9 +197,9 @@ make build
 make check
 ```
 
-The isolated verification script compiles the agent against a minimal NATS API
-stub and a local sibling checkout of the protocol module. It checks local Go
-behavior and interfaces only; it is not a real NATS integration test. Use a real
+The isolated verification script compiles the Agent against a minimal NATS
+API stub and the bundled protocol module. It checks local Go behavior and
+interfaces only; it is not a real NATS integration test. Use a real
 broker and controller for end-to-end validation. Commit the generated `go.sum`
 after `go mod tidy` before publishing a release.
 
@@ -258,8 +254,8 @@ before enabling service control on production hosts.
 
 ## Compatibility and limitations
 
-- This release uses wire protocol version `2` from the `machinarchy-protocol`
-  module. It is not compatible with a protocol-v1 controller. See
+- This release uses wire protocol version `2` from the nested `protocol/`
+  Go module. It is not compatible with a protocol-v1 controller. See
   [`docs/protocol/compatibility.md`](docs/protocol/compatibility.md).
 - Inbound command delivery uses a controller-provisioned JetStream durable
   pull consumer with explicit acknowledgements. Registration/lease request-

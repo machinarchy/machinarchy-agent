@@ -2,12 +2,14 @@
 
 ## Before opening a pull request
 
-1. Read `AGENTS.md` and the architecture documents.
-2. Keep changes within the agent's responsibility boundary.
-3. Add or update tests for all behavior changes.
-4. Update `ChangeLogAI.md` for every repository change.
-5. Update protocol compatibility documentation when wire behavior changes.
-6. Run `make check`.
+1. Read `AGENTS.md`, `protocol/AGENTS.md` and the architecture documents.
+2. Keep Agent runtime changes within the Agent responsibility boundary.
+3. Keep shared wire-contract changes inside `protocol/`; do not duplicate DTOs
+   in the Agent or controller application packages.
+4. Add or update tests for all behavior and contract changes.
+5. Update `ChangeLogAI.md` for every repository change.
+6. Update protocol compatibility documentation when wire behavior changes.
+7. Run `make check` from the repository root.
 
 ## Go conventions
 
@@ -21,10 +23,15 @@
 
 ## Protocol changes
 
-Protocol changes must be made in the `machinarchy-protocol` repository first.
-Update both controller and agent compatibility tests. Breaking changes require
-an explicit versioning decision and a rollout/compatibility plan. Do not modify
-wire payloads independently in this repository.
+Protocol changes are made in the `protocol/` nested Go module in this same
+repository. Keep the module dependency-light and transport-neutral. Update
+Agent contract tests and coordinate the import-path/module-version migration
+with the `machinarchy` controller repository. Breaking wire changes require an
+explicit versioning decision and a rollout/compatibility plan.
+
+The protocol module uses Git tags prefixed with `protocol/`, for example
+`protocol/v0.1.0`. Agent releases use ordinary root-level SemVer tags.
+Do not mix these version streams.
 
 ## Capability contributions
 

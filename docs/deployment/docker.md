@@ -60,13 +60,8 @@ docker build -t machinarchy-agent:local .
 MACHINARCHY_AGENT_IMAGE=machinarchy-agent:local docker compose -f compose.yaml up -d
 ```
 
-When the shared protocol module is private, pass a read-only token using a
-BuildKit secret rather than a build argument:
-
-```bash
-docker build --secret id=protocol_token,env=MACHINARCHY_PROTOCOL_READ_TOKEN \
-  -t machinarchy-agent:local .
-```
+The protocol module is included in this repository, so no private-module
+BuildKit secret or separate protocol token is required.
 
 Inspect logs:
 

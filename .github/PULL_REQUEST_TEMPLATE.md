@@ -4,8 +4,8 @@ Describe the change and its purpose.
 
 ## Scope
 
-- [ ] Agent-only change
-- [ ] Shared protocol change (protocol repository PR linked)
+- [ ] Agent runtime change
+- [ ] Shared protocol contract change (`protocol/` nested module)
 - [ ] Controller integration change (controller repository PR linked)
 
 ## Safety and reliability
