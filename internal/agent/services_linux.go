@@ -170,6 +170,7 @@ func serviceManagerEnvironment() []string {
 		"LC_ALL=C",
 		"SYSTEMD_PAGER=cat",
 		"SYSTEMD_COLORS=0",
+		"DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket",
 	}
 }
 

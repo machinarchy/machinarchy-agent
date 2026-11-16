@@ -34,6 +34,10 @@ transport; that does not authorize registering those capabilities in this Agent.
 - Do not claim durable delivery or exactly-once execution when using Core NATS.
 - Do not add a broker, HTTP server, or persistence dependency without an ADR.
 - Avoid unrelated refactoring and unnecessary abstractions.
+- Docker Engine deployment must remain non-root, non-privileged, without the
+  Docker socket, host PID/network namespaces, or a host-root filesystem mount.
+- The default Docker profile must not mount the host system D-Bus socket. Host
+  systemd access is an explicit Compose overlay backed by a host Polkit rule.
 
 ## Change log requirement
 

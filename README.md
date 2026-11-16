@@ -236,13 +236,17 @@ service. See
 [Native Linux binary deployment](docs/deployment/systemd.md) for upgrades,
 rollback, uninstall and security details.
 
-The existing Docker image runs the Agent inside a container but does not yet
-provide verified host OS integration. Do not use it to manage host services;
-Docker host integration is a separate planned phase.
+Docker Engine deployment is supported for host-facts collection. Optional
+systemd service management uses a separate Compose override plus an explicit
+host-side Polkit policy; see [Docker Engine deployment](docs/deployment/docker.md)
+and the [Phase 3 implementation record](docs/operations/phase3-docker-deployment.md).
+The Agent runs unprivileged and does not require Kubernetes, privileged mode,
+the Docker socket, host PID, host networking, or a host-root filesystem mount.
 
 - [Native Linux binary / systemd](docs/deployment/systemd.md)
 - [Phase 2 implementation and verification record](docs/operations/phase2-native-binary-deployment.md)
-- [Docker image limitations](docs/deployment/docker.md)
+- [Docker Engine deployment](docs/deployment/docker.md)
+- [Phase 3 implementation and verification record](docs/operations/phase3-docker-deployment.md)
 - [Operations and troubleshooting](docs/operations/troubleshooting.md)
 
 ## Security

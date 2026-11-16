@@ -28,6 +28,7 @@
 | Duplicate events | Bounded local event ledger and operation identifiers |
 | Resource exhaustion | Bounded workers, queues, timeouts, input/output limits |
 | Unauthorized OS operations | Explicit capability registry; local service allowlist; separate service-control opt-in; least-privilege OS identity; host systemd/Polkit policy |
+| Container escape or excessive host access | Non-root UID; read-only root filesystem; drop all Linux capabilities; no privileged mode, Docker socket, host PID/network or host-root mount; host D-Bus exposed only by optional Compose overlay |
 | Broker outage | Reconnect handling, lease renewal before resuming events |
 | Result loss | Local durable result outbox, retry until controller acknowledgement, bounded storage; inbound commands use JetStream explicit-ack durable consumers |
 | Local operation data disclosure | Private operation-store file (`0600`), private parent directory (`0700`), strip raw inputs after execution starts and retain outputs only until controller acknowledgement |
@@ -36,7 +37,11 @@
 
 ## Residual risks
 
-A compromised host can expose its local agent credentials and capabilities.
+The optional Docker systemd integration exposes the host system D-Bus socket to
+the Agent container. Its Polkit rule restricts systemd unit state changes to an
+explicit unit/action allowlist, but it is not a general D-Bus proxy and does not
+filter every system-bus API. Operators must accept this additional interface
+exposure before enabling the overlay. A compromised host can expose its local agent credentials and capabilities.
 A compromised controller credential or misconfigured NATS ACL can authorize
 malicious work. The Agent operation store is durable after a request has been accepted locally, but filesystem corruption, storage failure, or loss of the host disk can still prevent recovery. JetStream provides durable inbound command delivery only when the controller provisions the expected stream/consumer and retains its database outbox until publish acknowledgement. The operation store contains sensitive pending results and must remain protected by filesystem permissions and host-level controls. These residual risks require controller-side authorization, NATS server hardening, host isolation and verified broker ACLs; source-code checks alone cannot eliminate them.
 

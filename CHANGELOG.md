@@ -5,6 +5,15 @@ notes and file-level details belong in `ChangeLogAI.md`.
 
 ## Unreleased
 
+- Added Linux Docker Engine deployment for AMD64 and ARM64 with a non-root,
+  read-only, capability-dropped default profile and persistent Agent state.
+- Added host OS facts integration without a host-root mount and omitted the
+  container overlay filesystem metric from host facts.
+- Added an optional systemd D-Bus Compose overlay and host Polkit preparation
+  script for exact allowlisted start/stop/restart actions; socket access checks
+  support both world-accessible sockets and narrowly scoped non-root groups.
+- Added Docker host integration security documentation and static checks.
+
 - Added versioned Linux AMD64/ARM64 release archives containing the Agent
   binary, systemd unit, environment template and installation lifecycle tools.
 - Added atomic native installation and upgrade, one-step binary/unit rollback,

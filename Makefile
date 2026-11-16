@@ -41,9 +41,10 @@ verify-isolated: ## Verify agent source using the isolated NATS API stub harness
 	./scripts/verify-agent-isolated.sh
 
 deployment-check: ## Validate deployment scripts and release archive packaging
-	@for script in scripts/install-systemd.sh scripts/uninstall-systemd.sh scripts/rollback-systemd.sh scripts/package-release.sh scripts/test-release-package.sh scripts/verify-systemd-unit.sh; do bash -n "$$script"; done
+	@for script in scripts/install-systemd.sh scripts/uninstall-systemd.sh scripts/rollback-systemd.sh scripts/package-release.sh scripts/test-release-package.sh scripts/verify-systemd-unit.sh scripts/prepare-docker-host.sh scripts/remove-docker-host-policy.sh scripts/lib/docker-host.sh scripts/test-docker-deployment.sh; do bash -n "$$script"; done
 	./scripts/test-release-package.sh
 	./scripts/verify-systemd-unit.sh
+	./scripts/test-docker-deployment.sh
 
 docker-build: ## Build local container image
 	docker build --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) -t machinarchy-agent:$(VERSION) .

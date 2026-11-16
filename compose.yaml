@@ -1,0 +1,42 @@
+name: machinarchy-agent
+
+services:
+  agent:
+    image: ${MACHINARCHY_AGENT_IMAGE:-ghcr.io/machinarchy/machinarchy-agent:latest}
+    user: "10001:10001"
+    env_file:
+      - .env
+    environment:
+      MACHINARCHY_ENVIRONMENT: production
+      MACHINARCHY_AGENT_STATE_FILE: /var/lib/machinarchy-agent/identity.json
+      MACHINARCHY_AGENT_OPERATION_STORE_FILE: /var/lib/machinarchy-agent/operations.json
+      MACHINARCHY_AGENT_SERVICE_MANAGEMENT_ENABLED: "false"
+      MACHINARCHY_AGENT_SERVICE_CONTROL_ENABLED: "false"
+      MACHINARCHY_AGENT_NATS_CREDENTIALS_FILE: /run/secrets/nats.creds
+    volumes:
+      - agent-state:/var/lib/machinarchy-agent
+      - type: bind
+        source: ./secrets/nats.creds
+        target: /run/secrets/nats.creds
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /etc/os-release
+        target: /run/machinarchy-host/os-release
+        read_only: true
+        bind:
+          create_host_path: false
+    uts: host
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+volumes:
+  agent-state:
+    name: machinarchy-agent-state

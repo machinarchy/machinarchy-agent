@@ -1,0 +1,15 @@
+services:
+  agent:
+    volumes:
+      - type: bind
+        source: /run/dbus/system_bus_socket
+        target: /run/dbus/system_bus_socket
+        read_only: true
+        bind:
+          create_host_path: false
+    group_add:
+      - "${MACHINARCHY_DBUS_GID:?Run scripts/prepare-docker-host.sh and set MACHINARCHY_DBUS_GID in .env}"
+    environment:
+      MACHINARCHY_AGENT_SERVICE_MANAGEMENT_ENABLED: "true"
+      MACHINARCHY_AGENT_SERVICE_CONTROL_ENABLED: ${MACHINARCHY_AGENT_SERVICE_CONTROL_ENABLED:-false}
+      MACHINARCHY_AGENT_SERVICE_ALLOWLIST: ${MACHINARCHY_AGENT_SERVICE_ALLOWLIST:?Set an exact .service allowlist in .env}

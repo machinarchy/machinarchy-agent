@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -32,7 +33,22 @@ func collectPlatformFacts(ctx context.Context) (platformFacts, error) {
 }
 
 func readOSRelease() (name, version string) {
-	file, err := os.Open("/etc/os-release")
+	return readOSReleaseFile(osReleasePath(isContainerEnvironmentAt("/")))
+}
+
+func osReleasePath(inContainer bool) string {
+	if inContainer {
+		// Docker mounts the host release file at a dedicated path rather than
+		// over /etc/os-release, which is commonly a symlink in Linux images.
+		// If the host file is unavailable, omit the distribution fields instead
+		// of silently reporting the container image's distribution.
+		return "/run/machinarchy-host/os-release"
+	}
+	return "/etc/os-release"
+}
+
+func readOSReleaseFile(path string) (name, version string) {
+	file, err := os.Open(path)
 	if err != nil {
 		return "", ""
 	}
@@ -123,6 +139,12 @@ func readLinuxUptime() *uint64 {
 }
 
 func readRootFilesystem() *FilesystemFacts {
+	// A container's / is its writable overlay or container root, not the host
+	// root filesystem. Docker and Podman provide marker files; omit this metric
+	// instead of returning a misleading container filesystem measurement.
+	if isContainerEnvironmentAt("/") {
+		return nil
+	}
 	var stat syscall.Statfs_t
 	if err := syscall.Statfs("/", &stat); err != nil {
 		return nil
@@ -140,4 +162,16 @@ func readRootFilesystem() *FilesystemFacts {
 		return nil
 	}
 	return &FilesystemFacts{TotalBytes: total, AvailableBytes: available}
+}
+
+// isContainerEnvironmentAt is separated from readRootFilesystem so container
+// detection can be tested without requiring a Docker runtime.
+func isContainerEnvironmentAt(root string) bool {
+	for _, marker := range []string{".dockerenv", "run/.containerenv"} {
+		info, err := os.Stat(filepath.Join(root, marker))
+		if err == nil && !info.IsDir() {
+			return true
+		}
+	}
+	return false
 }

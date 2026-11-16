@@ -327,3 +327,35 @@
   the Go toolchain proxy is blocked. Real installation/upgrade/rollback against
   a systemd VM still needs to be exercised before declaring deployment
   production-ready.
+
+
+## 2026-11-14 — Phase 3 Docker Engine deployment and host OS integration
+
+### Changed
+- Added the `systemctl` client to the Docker runtime image while keeping the
+  Agent process unprivileged and not running systemd inside the container.
+- Added the default host-facts-only Compose deployment and a separate optional
+  systemd D-Bus overlay.
+- Added a host preparation script that validates D-Bus socket permissions,
+  avoids adding a supplemental host group when the socket is already accessible
+  to other users, reserves host UID 10001 for `machagent`, and installs a
+  Polkit rule restricted to start/stop/restart of explicit service units.
+- Added a policy removal script.
+- Added container detection so `system.facts` omits the container overlay's
+  filesystem size rather than misreporting it as host root filesystem data.
+- Mounts host `/etc/os-release` at `/run/machinarchy-host/os-release` rather
+  than over the image's potentially symlinked `/etc/os-release`; container
+  facts omit distribution metadata when the host mount is missing.
+- Updated Docker image publishing to support AMD64 and ARM64.
+- Updated Agent repository instructions, threat model, compatibility matrix,
+  README, Docker deployment guide, and implementation history.
+
+### Verification
+- Shared protocol and Agent unit tests passed in the isolated Go 1.23 harness.
+- Agent race detector, `go vet`, Linux build, CLI config validation and Windows
+  test cross-compilation passed in the isolated harness.
+- Native release packaging, systemd unit verification and Docker deployment
+  static shell/Compose checks passed.
+- Both Compose YAML files parsed successfully with PyYAML.
+- Live Docker image builds, D-Bus connectivity, Polkit authorization and
+  controller/NATS end-to-end tests remain unverified in this environment.

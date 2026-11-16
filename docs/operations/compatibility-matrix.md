@@ -18,7 +18,8 @@ integration suite against the tagged releases and the actual NATS ACL model.
 | Linux with systemd | AMD64 | Native binary | Release packaging target; live integration still required |
 | Linux with systemd | ARM64 | Native binary | Release packaging target; live integration still required |
 | Linux without systemd | AMD64/ARM64 | Native binary | Not supported by the systemd installer |
-| Docker Engine | AMD64 | Container | Agent runtime only; host OS management is not supported yet |
+| Docker Engine | AMD64 | Container | Host-facts-only profile; optional systemd D-Bus/Polkit integration pending live host validation |
+| Docker Engine | ARM64 | Container | Host-facts-only profile; optional systemd D-Bus/Polkit integration pending live host validation |
 | Windows/macOS | Any | Native binary | Not production-supported |
 
 Windows may build, but it is not production-approved until the durable-store
@@ -28,5 +29,9 @@ covered by native Windows tests.
 
 The Agent's initial service backend supports Linux/systemd only. Read-only status
 and mutating control are separate opt-ins; exact local service allowlists are
-required. Controller authorization for these capabilities and real systemd /
-polkit behavior have not yet been verified.
+required. Docker service integration additionally requires the optional host
+D-Bus Compose overlay and a host Polkit rule. The initial Docker deployment
+supports rootful Docker with default UID/GID mapping; rootless Docker and
+`userns-remap` are not yet supported. The design is statically checked, but real
+Docker, D-Bus and Polkit behavior must still be verified on clean AMD64 and
+ARM64 Linux hosts before production approval.
