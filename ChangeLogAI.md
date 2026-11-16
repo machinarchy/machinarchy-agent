@@ -214,3 +214,61 @@
   stub and Go 1.23 compatibility harness.
 - Real Go 1.26 CI, real NATS/JetStream, systemd/polkit permission behavior and
   controller authorization/integration remain to be verified.
+
+
+## 2026-11-14 — Phase 1 minimal Agent core and scope hardening
+
+### Removed
+
+- Removed Agent-side `exec.command` and `exec.script` implementations, tests,
+  process-group cancellation helpers and execution-specific configuration.
+- Removed obsolete execution environment settings and documentation from the
+  Agent configuration template and capability reference.
+
+### Changed
+
+- Narrowed the Agent capability profile to `runtime.info`, `system.facts`, and
+  opt-in `service.status` / `service.control` for exact local systemd unit
+  allowlists.
+- Added regression tests for the baseline capability set, opt-in service
+  capability registration, and `runtime.info` capability advertisement.
+- Extracted the generic bounded output buffer and normalized capability error
+  handling from the removed execution implementation so systemd operations
+  retain bounded output capture and structured failure results.
+- Clarified that shared `execution/v1` contracts remain in the protocol module
+  for the controller's independent SSH transport; the Agent no longer exposes
+  generic remote command or shell-script execution.
+- Updated the Agent README, architecture, security, configuration and phase
+  documentation to match the approved minimal OS-management scope.
+
+### Files changed
+
+- Runtime/configuration: `internal/agent/config.go`,
+  `internal/agent/config_test.go`, `internal/agent/dispatcher.go`,
+  `internal/agent/dispatcher_test.go`, `internal/agent/capabilities_test.go`,
+  and new `internal/agent/capability_output.go`.
+- Removed: `internal/agent/execution.go`,
+  `internal/agent/execution_test.go`, `internal/agent/process_unix.go`,
+  `internal/agent/process_windows.go`, `docs/architecture/execution.md`, and
+  `docs/security/execution.md`.
+- Configuration and policy: `.env.example`, `AGENTS.md`, `SECURITY.md`,
+  `docs/configuration/reference.md`, and `docs/security/threat-model.md`.
+- Product and operations documentation: `README.md`, `CHANGELOG.md`,
+  `docs/architecture/overview.md`, `docs/architecture/operational-runtime.md`,
+  `docs/operations/phase1-minimal-agent-core.md`,
+  `docs/operations/phase3-host-facts.md`,
+  `docs/operations/phase5-service-management.md`,
+  `docs/deployment/docker.md`, and `docs/protocol/compatibility.md`.
+- Updated `scripts/verify-agent-isolated.sh` output label.
+
+### Verification
+
+- Passed `scripts/verify-agent-isolated.sh` with the local shared protocol
+  checkout: protocol tests and vet, Agent unit tests, race detector, `go vet`,
+  Linux build and Windows cross-compilation.
+- `make fmt-check` passed.
+- The repository declares Go 1.26.0; this environment provides Go 1.23.2 and
+  cannot download the required toolchain. Verification therefore used the
+  temporary Go 1.23 harness and compile-time NATS stub. Real Go 1.26 CI, actual
+  NATS v1.55.0, live JetStream, systemd/Polkit and controller end-to-end tests
+  remain outstanding.

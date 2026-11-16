@@ -30,8 +30,7 @@ empty JSON object as input:
 {}
 ```
 
-The capability is read-only and is enabled by default. It does not require
-`MACHINARCHY_AGENT_EXECUTION_ENABLED`.
+The capability is read-only and is enabled by default.
 
 ## Compatibility
 

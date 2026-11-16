@@ -24,8 +24,9 @@ payloads.
   capability checks succeed.
 - The controller remains authoritative for identity and lease validity.
 - Capabilities must be explicitly registered and bounded.
-- Remote command/script execution is disabled by default and runs as the Agent OS user when explicitly enabled.
-- Same-identity execution can access files readable by the Agent account; environment filtering is not credential isolation.
+- The Agent does not expose generic remote command or shell-script execution.
+- Service management is opt-in, exact-allowlist based and constrained by the
+  Agent OS identity and host systemd/Polkit policy.
 - Secrets and sensitive operation output must never be written to logs.
 - No inbound listener is required by the current architecture.
 - NATS permissions must restrict registration/renewal and agent-specific

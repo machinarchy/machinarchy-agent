@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/machinarchy/machinarchy-protocol/agent/v1"
-	executionv1 "github.com/machinarchy/machinarchy-protocol/execution/v1"
 	servicesv1 "github.com/machinarchy/machinarchy-protocol/services/v1"
 )
 
@@ -444,7 +443,6 @@ func (d *OperationDispatcher) recoverQueuedOperation(parent context.Context, ent
 		request.OutputLimitBytes = int64(outputLimit)
 	}
 	opCtx, cancel := context.WithTimeout(parent, timeout)
-	opCtx = context.WithValue(opCtx, executionOutputLimitKey{}, outputLimit)
 	return &queuedOperation{request: request, event: entry.Event, capability: capability, ctx: opCtx, cancel: cancel, acceptedAt: entry.AcceptedAt}, nil
 }
 
@@ -493,11 +491,7 @@ func (d *OperationDispatcher) handleRequest(ctx context.Context, event AgentEven
 	if request.OutputLimitBytes == 0 {
 		request.OutputLimitBytes = int64(d.config.MaxOutputBytes)
 	}
-	minimumOutputLimit := int64(1)
-	if request.Capability == executionv1.CapabilityCommand || request.Capability == executionv1.CapabilityScript {
-		minimumOutputLimit = minimumExecutionOutputBytes
-	}
-	if request.OutputLimitBytes < minimumOutputLimit || request.OutputLimitBytes > int64(d.config.MaxOutputBytes) {
+	if request.OutputLimitBytes < 1 || request.OutputLimitBytes > int64(d.config.MaxOutputBytes) {
 		return &InvalidAgentEventError{reason: "operation output limit is outside the locally configured range"}
 	}
 
@@ -598,7 +592,6 @@ func (d *OperationDispatcher) handleRequest(ctx context.Context, event AgentEven
 		return d.publishSimpleResult(ctx, event, request, OperationStatusRejected, "operation_queue_full")
 	}
 	opCtx, cancel := context.WithTimeout(d.ctx, timeout)
-	opCtx = context.WithValue(opCtx, executionOutputLimitKey{}, int(request.OutputLimitBytes))
 	acceptedAt := time.Now().UTC()
 	op := &queuedOperation{request: request, event: event, capability: capability, ctx: opCtx, cancel: cancel, acceptedAt: acceptedAt}
 	entry := StoredOperation{OperationID: request.OperationID, Capability: request.Capability, Request: request, Event: event, Status: OperationStatusAccepted, AcceptedAt: acceptedAt}
@@ -774,10 +767,10 @@ func (d *OperationDispatcher) execute(op *queuedOperation) {
 	status := OperationStatusSucceeded
 	code := ""
 	if err != nil {
-		var executionErr *CapabilityExecutionError
-		hasExecutionResult := errors.As(err, &executionErr)
+		var capabilityErr *CapabilityError
+		hasExecutionResult := errors.As(err, &capabilityErr)
 		if hasExecutionResult {
-			output = executionErr.Output
+			output = capabilityErr.Output
 		}
 		switch {
 		case errors.Is(op.ctx.Err(), context.DeadlineExceeded):
@@ -788,7 +781,7 @@ func (d *OperationDispatcher) execute(op *queuedOperation) {
 			if errors.Is(err, errCapabilityPanicked) {
 				status, code, output = OperationStatusFailed, "capability_panicked", nil
 			} else if hasExecutionResult {
-				status, code = OperationStatusFailed, executionErr.Code
+				status, code = OperationStatusFailed, capabilityErr.Code
 			} else {
 				status, code, output = OperationStatusFailed, "capability_execution_failed", nil
 			}
@@ -1118,9 +1111,6 @@ func defaultCapabilityRegistry(agentVersion string, config Config) (*CapabilityR
 			capabilityNames = append(capabilityNames, servicesv1.CapabilityControl)
 		}
 	}
-	if config.CommandExecutionEnabled {
-		capabilityNames = append(capabilityNames, executionv1.CapabilityCommand, executionv1.CapabilityScript)
-	}
 	registry := NewCapabilityRegistry()
 	if err := registry.Register("runtime.info", runtimeInfoCapability(agentVersion, capabilityNames)); err != nil {
 		return nil, err
@@ -1143,20 +1133,6 @@ func defaultCapabilityRegistry(agentVersion string, config Config) (*CapabilityR
 			if err := registry.Register(servicesv1.CapabilityControl, controlCapability); err != nil {
 				return nil, err
 			}
-		}
-	}
-	if config.CommandExecutionEnabled {
-		commandCapability, scriptCapability, err := NewExecutionCapabilities(ExecutionCapabilityConfig{
-			ShellPath: config.ExecutionShellPath, MaxOutputBytes: config.MaxOperationOutputBytes,
-		})
-		if err != nil {
-			return nil, err
-		}
-		if err := registry.Register(executionv1.CapabilityCommand, commandCapability); err != nil {
-			return nil, err
-		}
-		if err := registry.Register(executionv1.CapabilityScript, scriptCapability); err != nil {
-			return nil, err
 		}
 	}
 	return registry, nil

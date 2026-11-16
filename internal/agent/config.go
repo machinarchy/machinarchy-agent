@@ -47,8 +47,7 @@ const (
 	envOperationInputLimit      = "MACHINARCHY_AGENT_OPERATION_MAX_INPUT_BYTES"
 	envOperationOutputLimit     = "MACHINARCHY_AGENT_OPERATION_MAX_OUTPUT_BYTES"
 	envResultPublishTimeout     = "MACHINARCHY_AGENT_RESULT_PUBLISH_TIMEOUT"
-	envExecutionEnabled         = "MACHINARCHY_AGENT_EXECUTION_ENABLED"
-	envExecutionShellPath       = "MACHINARCHY_AGENT_EXECUTION_SHELL"
+	envRemovedExecutionEnabled  = "MACHINARCHY_AGENT_EXECUTION_ENABLED"
 	envServiceManagementEnabled = "MACHINARCHY_AGENT_SERVICE_MANAGEMENT_ENABLED"
 	envServiceControlEnabled    = "MACHINARCHY_AGENT_SERVICE_CONTROL_ENABLED"
 	envServiceAllowlist         = "MACHINARCHY_AGENT_SERVICE_ALLOWLIST"
@@ -98,11 +97,6 @@ type Config struct {
 	MaxOperationOutputBytes int
 	ResultPublishTimeout    time.Duration
 
-	// CommandExecutionEnabled opts this host into controller-requested command
-	// and shell-script execution. It is disabled by default.
-	CommandExecutionEnabled bool
-	ExecutionShellPath      string
-
 	// Service management is separately opt-in and restricted to exact local
 	// systemd unit names. Mutating actions require an additional opt-in.
 	ServiceManagementEnabled bool
@@ -114,6 +108,15 @@ type Config struct {
 // LoadConfig loads and validates agent configuration from the process
 // environment. It does not log configuration values or exit the process.
 func LoadConfig() (Config, error) {
+	if raw := strings.TrimSpace(os.Getenv(envRemovedExecutionEnabled)); raw != "" {
+		enabled, err := strconv.ParseBool(raw)
+		if err != nil {
+			return Config{}, fmt.Errorf("%s must be a boolean; generic command/script execution is not supported by this Agent build", envRemovedExecutionEnabled)
+		}
+		if enabled {
+			return Config{}, fmt.Errorf("%s=true is no longer supported; this Agent build exposes structured OS capabilities only", envRemovedExecutionEnabled)
+		}
+	}
 	get := func(key, fallback string) string {
 		value := strings.TrimSpace(os.Getenv(key))
 		if value == "" {
@@ -158,8 +161,6 @@ func LoadConfig() (Config, error) {
 		MaxOperationInputBytes:   maxOperationInputBytes,
 		MaxOperationOutputBytes:  maxOperationOutputBytes,
 		ResultPublishTimeout:     5 * time.Second,
-		CommandExecutionEnabled:  false,
-		ExecutionShellPath:       "/bin/sh",
 		ServiceManagementEnabled: false,
 		ServiceControlEnabled:    false,
 		SystemctlPath:            "/usr/bin/systemctl",
@@ -213,10 +214,6 @@ func LoadConfig() (Config, error) {
 	if cfg.ResultPublishTimeout, err = durationFromEnv(envResultPublishTimeout, cfg.ResultPublishTimeout); err != nil {
 		return Config{}, err
 	}
-	if cfg.CommandExecutionEnabled, err = boolFromEnv(envExecutionEnabled, cfg.CommandExecutionEnabled); err != nil {
-		return Config{}, err
-	}
-	cfg.ExecutionShellPath = strings.TrimSpace(get(envExecutionShellPath, cfg.ExecutionShellPath))
 	if cfg.ServiceManagementEnabled, err = boolFromEnv(envServiceManagementEnabled, cfg.ServiceManagementEnabled); err != nil {
 		return Config{}, err
 	}
@@ -319,14 +316,6 @@ func (c Config) Validate() error {
 		}
 	} else if len(c.AllowedServices) != 0 {
 		return fmt.Errorf("%s requires %s=true", envServiceAllowlist, envServiceManagementEnabled)
-	}
-	if c.CommandExecutionEnabled {
-		if c.MaxOperationOutputBytes < minimumExecutionOutputBytes {
-			return fmt.Errorf("%s must be at least %d when command execution is enabled", envOperationOutputLimit, minimumExecutionOutputBytes)
-		}
-		if c.ExecutionShellPath == "" || !filepath.IsAbs(c.ExecutionShellPath) || strings.ContainsAny(c.ExecutionShellPath, "\r\n\x00") {
-			return fmt.Errorf("%s must be an absolute single-line path when command execution is enabled", envExecutionShellPath)
-		}
 	}
 	if c.IdentityFile == "" || strings.TrimSpace(c.IdentityFile) != c.IdentityFile || strings.ContainsAny(c.IdentityFile, "\r\n\x00") {
 		return errors.New("agent identity file path must be a non-empty single-line path")

@@ -1,19 +1,18 @@
 # Machinarchy Agent
 
-**The distributed execution runtime for Machinarchy.**
+**A lightweight Linux OS management runtime for Machinarchy.**
 
 The Agent runs on managed machines and maintains an authenticated outbound
 connection to the Machinarchy control plane through the configured event
 broker. It receives controller-authorized work and executes only explicitly
 registered capabilities.
 
-> **Development status:** this is an early hybrid-execution implementation.
+> **Development status:** this is an early Linux OS-management implementation.
 > The Agent runtime, enrollment/lease lifecycle, bounded dispatcher, durable
-> local operation store/result outbox, and JetStream durable command consumer
-> are implemented as an initial integration slice. The controller overlay and
-> isolated tests are available, but actual controller integration, real NATS
-> integration and end-to-end failure tests remain required before production
-> deployment.
+> local operation store/result outbox, JetStream command consumer, host facts,
+> and allowlisted systemd operations are implemented. Real Go 1.26, NATS/
+> JetStream, host systemd/Polkit and end-to-end controller tests are still
+> required before production deployment.
 
 ## Repository responsibilities
 
@@ -92,40 +91,33 @@ Machinarchy Agent
   best-effort Linux memory, uptime and root-filesystem metrics. It intentionally
   excludes IP addresses, usernames, environment variables, process lists and
   machine IDs.
-- Opt-in `exec.command` and `exec.script` capabilities using shared, transport-
-  neutral request/result contracts from `machinarchy-protocol/execution/v1`.
 - Opt-in Linux/systemd `service.status` and `service.control` capabilities. They
   are restricted to an exact local `.service` allowlist; control operations
   (`start`, `stop`, `restart`) require a separate opt-in.
-- Bounded stdout/stderr capture, explicit child-process environments, operation
-  cancellation, and non-zero exit status reporting. Systemd subprocesses use a
-  minimal fixed environment and never inherit Agent broker credentials.
+- Bounded operation results, context cancellation and non-zero service-manager
+  result reporting. Systemd subprocesses use a minimal fixed environment and
+  never inherit Agent broker credentials.
 
-Command, script and service management remain **disabled by default**. Service
-status and control have separate opt-ins, and service control is limited to an
+The Agent does **not** expose generic remote command or shell-script execution.
+Service status and control have separate opt-ins, and both are limited to an
 exact local systemd unit allowlist. All operations use the operating-system
 permissions of the Agent process; the Agent never silently elevates privileges.
 See [`docs/operations/phase5-service-management.md`](docs/operations/phase5-service-management.md).
+The approved minimal capability scope is recorded in
+[`docs/operations/phase1-minimal-agent-core.md`](docs/operations/phase1-minimal-agent-core.md).
 
-## Hybrid execution role
+## Agent scope and transport boundary
 
-The Agent is one execution transport in Machinarchy, alongside the controller's
-SSH executor. Both transports use the same `execution/v1` contracts for command
-and script inputs and normalized results. Inventory, host targeting, transport
-selection, authorization, job scheduling and job history remain controller
-responsibilities. The Agent does not connect to hosts over SSH.
+The Agent is an optional management runtime for hosts configured to use the
+Agent transport. The controller may independently use SSH for other hosts and
+workloads. The Agent itself does not connect to hosts over SSH and does not
+provide generic remote command or shell-script execution. Its initial supported
+capabilities are limited to `runtime.info`, `system.facts`, and explicitly
+configured Linux/systemd `service.status` and `service.control`.
 
-To opt a host into Agent command and shell-script execution, explicitly set:
-
-```dotenv
-MACHINARCHY_AGENT_EXECUTION_ENABLED=true
-MACHINARCHY_AGENT_EXECUTION_SHELL=/bin/sh
-```
-
-`exec.command` runs an executable plus an argument vector without shell parsing.
-`exec.script` runs script text through the locally configured shell. See
-[`docs/architecture/execution.md`](docs/architecture/execution.md) for the
-execution contract, security boundary and current controller integration work.
+The shared protocol repository may contain transport-neutral execution
+contracts for the controller's SSH implementation. Their presence in the
+shared protocol does not enable or expose those operations through this Agent.
 
 ## Requirements
 
@@ -217,6 +209,11 @@ after `go mod tidy` before publishing a release.
 
 ## Deployment
 
+The native Linux/systemd deployment is the current host-management path. The
+existing Docker image runs the Agent inside a container but does not yet provide
+verified host OS integration; keep service management disabled in Docker until
+that work is completed.
+
 - [Docker](docs/deployment/docker.md)
 - [systemd](docs/deployment/systemd.md)
 - [Operations and troubleshooting](docs/operations/troubleshooting.md)
@@ -225,8 +222,8 @@ after `go mod tidy` before publishing a release.
 
 Review [`SECURITY.md`](SECURITY.md),
 [`docs/security/threat-model.md`](docs/security/threat-model.md), and
-[`docs/security/execution.md`](docs/security/execution.md) before enabling
-operation execution on production hosts.
+[`docs/operations/phase5-service-management.md`](docs/operations/phase5-service-management.md)
+before enabling service control on production hosts.
 
 ## Compatibility and limitations
 

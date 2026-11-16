@@ -10,6 +10,17 @@ Shared wire contracts belong to `github.com/machinarchy/machinarchy-protocol`.
 Do not duplicate those DTOs inside this repository or import packages from the
 controller's `internal/` tree.
 
+## Current Agent product scope
+
+The current Agent MVP is a lightweight Linux OS-management runtime. Its only
+supported capability names are `runtime.info`, `system.facts`, and opt-in
+`service.status` / `service.control` for exact local systemd unit allowlists.
+Do not add generic `exec.command` / `exec.script`, package management, file
+management, users/groups, firewall, network configuration, Kubernetes, or
+monitoring features without an explicit product-scope decision. The shared
+protocol may retain contracts used by the controller's independent SSH
+transport; that does not authorize registering those capabilities in this Agent.
+
 ## Engineering requirements
 
 - Keep `cmd/machinarchy-agent` thin; lifecycle logic belongs under `internal/agent`.

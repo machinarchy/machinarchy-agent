@@ -34,22 +34,27 @@ secret values. See `.env.example` for a commented template.
 | `MACHINARCHY_AGENT_OPERATION_MAX_INPUT_BYTES` | `65536` | Maximum operation input |
 | `MACHINARCHY_AGENT_OPERATION_MAX_OUTPUT_BYTES` | `262144` | Maximum operation output |
 | `MACHINARCHY_AGENT_RESULT_PUBLISH_TIMEOUT` | `5s` | Result publish timeout |
-| `MACHINARCHY_AGENT_EXECUTION_ENABLED` | `false` | Explicitly enables `exec.command` and `exec.script` on this host |
 | `MACHINARCHY_AGENT_SERVICE_MANAGEMENT_ENABLED` | `false` | Enables read-only `service.status` on Linux/systemd; requires an exact allowlist |
 | `MACHINARCHY_AGENT_SERVICE_CONTROL_ENABLED` | `false` | Separately enables `service.control` (`start`, `stop`, `restart`) |
 | `MACHINARCHY_AGENT_SERVICE_ALLOWLIST` | unset | Comma-separated exact systemd `.service` unit names; required when service management is enabled |
 | `MACHINARCHY_AGENT_SYSTEMCTL_PATH` | `/usr/bin/systemctl` | Absolute path to the local systemctl executable |
-| `MACHINARCHY_AGENT_EXECUTION_SHELL` | `/bin/sh` | Absolute local interpreter path used by `exec.script`; controller cannot override it |
 | `MACHINARCHY_AGENT_REGISTER_SUBJECT` | protocol default | Registration subject override |
 | `MACHINARCHY_AGENT_LEASE_RENEW_SUBJECT` | protocol default | Lease renewal subject override |
 
-## Execution notes
+## Capability profile
 
-- Command execution is disabled unless `MACHINARCHY_AGENT_EXECUTION_ENABLED=true`.
-- `exec.command` executes an argv vector; it does not implicitly invoke a shell.
-- `exec.script` uses the locally configured shell and receives script content on stdin.
-- Both execute with the Agent process OS identity and its filesystem/service sandbox.
-- If command execution is enabled, the operation output limit must be at least 1024 bytes.
+The Agent's baseline read-only capabilities are `runtime.info` and
+`system.facts`. It does not expose generic remote command or shell-script
+execution. The `services/v1` capabilities are added only when service management
+is explicitly enabled and a non-empty exact unit allowlist is configured.
+`service.control` is registered only when both service-management switches are
+enabled.
+
+Legacy configuration containing `MACHINARCHY_AGENT_EXECUTION_ENABLED=true` is
+rejected with an explicit error so an old deployment cannot assume generic
+command execution is still available. Remove that setting when upgrading. A
+legacy `MACHINARCHY_AGENT_EXECUTION_ENABLED=false` value is harmless but should
+also be removed from the environment file.
 
 ## Production rules
 

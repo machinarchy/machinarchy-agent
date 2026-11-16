@@ -431,6 +431,29 @@ func TestOperationDispatcherContainsCapabilityPanic(t *testing.T) {
 	}
 }
 
+func TestOperationDispatcherPreservesNormalizedCapabilityFailureOutput(t *testing.T) {
+	registry := NewCapabilityRegistry()
+	partial := json.RawMessage(`{"partial":true}`)
+	if err := registry.Register("test.partial", CapabilityFunc(func(context.Context, json.RawMessage) (json.RawMessage, error) {
+		return partial, &CapabilityError{Code: "service_action_failed", Output: partial, cause: errors.New("sensitive local error")}
+	})); err != nil {
+		t.Fatal(err)
+	}
+	publisher := newMemoryOperationPublisher()
+	dispatcher := newTestDispatcher(t, 1, 1, registry, publisher)
+	if err := dispatcher.Handle(context.Background(), operationEvent(validTestIdentity(), "event-partial", "operation-partial", "test.partial", `{}`, time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	awaitResult(t, publisher, OperationStatusAccepted)
+	result := awaitResult(t, publisher, OperationStatusFailed)
+	if result.ErrorCode != "service_action_failed" {
+		t.Fatalf("ErrorCode = %q, want service_action_failed", result.ErrorCode)
+	}
+	if string(result.Output) != string(partial) {
+		t.Fatalf("Output = %s, want %s", result.Output, partial)
+	}
+}
+
 func TestOperationDispatcherRejectsResultOutputAboveLimit(t *testing.T) {
 	registry := NewCapabilityRegistry()
 	if err := registry.Register("test.large", CapabilityFunc(func(context.Context, json.RawMessage) (json.RawMessage, error) {

@@ -27,7 +27,7 @@
 | Malformed/oversized messages | Strict decoder, message limits, bounded queues |
 | Duplicate events | Bounded local event ledger and operation identifiers |
 | Resource exhaustion | Bounded workers, queues, timeouts, input/output limits |
-| Unsafe command execution | Execution disabled by default; explicit controller authorization; fixed local shell; strict inputs; bounded output; deadlines; process-group cancellation; least-privilege OS user |
+| Unauthorized OS operations | Explicit capability registry; local service allowlist; separate service-control opt-in; least-privilege OS identity; host systemd/Polkit policy |
 | Broker outage | Reconnect handling, lease renewal before resuming events |
 | Result loss | Local durable result outbox, retry until controller acknowledgement, bounded storage; inbound commands use JetStream explicit-ack durable consumers |
 | Local operation data disclosure | Private operation-store file (`0600`), private parent directory (`0700`), strip raw inputs after execution starts and retain outputs only until controller acknowledgement |
@@ -40,9 +40,3 @@ A compromised host can expose its local agent credentials and capabilities.
 A compromised controller credential or misconfigured NATS ACL can authorize
 malicious work. The Agent operation store is durable after a request has been accepted locally, but filesystem corruption, storage failure, or loss of the host disk can still prevent recovery. JetStream provides durable inbound command delivery only when the controller provisions the expected stream/consumer and retains its database outbox until publish acknowledgement. The operation store contains sensitive pending results and must remain protected by filesystem permissions and host-level controls. These residual risks require controller-side authorization, NATS server hardening, host isolation and verified broker ACLs; source-code checks alone cannot eliminate them.
 
-When command execution is enabled, the controller is effectively trusted to
-request any operation permitted to the Agent's OS identity. A compromised
-controller or overly broad NATS ACL can therefore cause host-level impact.
-Keep execution disabled on hosts that should expose only read-only Agent
-capabilities, use a dedicated unprivileged service account by default, and
-review any change that grants the Agent additional OS privileges.

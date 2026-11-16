@@ -41,7 +41,7 @@ go 1.23
 MOD
 
 cd "${WORK_DIR}/protocol"
-printf '%s\n' '== shared host facts protocol tests =='
+printf '%s\n' '== shared protocol package tests =='
 go test -count=1 ./...
 printf '%s\n' '== shared protocol go vet =='
 go vet ./...

@@ -39,9 +39,9 @@ notes and file-level details belong in `ChangeLogAI.md`.
 - Added the Agent protocol v2 result acknowledgement event and `unknown`
   operation status. Controller support is required before deployment.
 
-- Added opt-in Agent command and shell-script execution capabilities using
-  shared transport-neutral execution contracts.
-- Added bounded stdout/stderr capture and non-zero exit result reporting.
+- Removed Agent-side generic command and shell-script execution from the
+  minimal OS-management profile. The shared execution contract remains available
+  for the controller's independent SSH transport.
 
 - Extracted the agent runtime into an independent Go module.
 - Added standalone build, test, container and systemd deployment scaffolding.

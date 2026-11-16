@@ -18,6 +18,12 @@ This is not yet a desired-state system. It does not implement `enable`,
 `disable`, `reload`, unit-file changes, dependency ordering, health checks,
 `service.ensure`, or Windows/macOS service managers.
 
+Host service management is currently supported only by the native Linux Agent
+when the Agent OS identity and local systemd/Polkit policy permit the action.
+The current Docker image is not a host systemd integration and must keep both
+service-management settings disabled. Docker host integration is a separate
+planned deployment phase.
+
 ## Local opt-in and allowlist
 
 All service operations are disabled by default. To enable read-only status on a
@@ -39,8 +45,7 @@ MACHINARCHY_AGENT_SERVICE_CONTROL_ENABLED=true
 The allowlist is mandatory, exact-match, comma-separated and limited to 64
 systemd `.service` unit names. The initial safe-name subset permits letters,
 digits, dots, underscores, hyphens and `@`; wildcard matching and arbitrary
-controller-supplied arguments are not supported. The Agent verifies the allowlist again at
-execution time. A service not listed locally is rejected even if the
+controller-supplied arguments are not supported. The Agent verifies the allowlist again at execution time. A service not listed locally is rejected even if the
 controller sends a valid operation.
 
 `service.control` is registered only when both switches are enabled. `runtime.info`

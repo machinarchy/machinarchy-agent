@@ -2,10 +2,11 @@
 
 ## Purpose
 
-The Machinarchy Agent is a long-running, outbound-connected runtime installed
-on managed hosts. It is a capability adapter and execution endpoint. It is not
-a controller, scheduler, inventory database, or source of authoritative
-identity.
+The Machinarchy Agent is a lightweight, long-running, outbound-connected
+Linux OS-management runtime. It reports selected host facts and, when locally
+configured, inspects or controls allowlisted systemd services. It is not a
+general-purpose remote shell, controller, scheduler, inventory database, or
+source of authoritative identity.
 
 ## Runtime layers
 
@@ -19,19 +20,17 @@ identity.
    event type, timestamps, payload size and deduplication identifier.
 5. **Operation dispatcher** — enforces bounded queue depth, bounded worker
    count, operation deadlines and cancellation.
-6. **Capability registry** — resolves only explicitly registered capabilities.
-   Command and script capabilities are opt-in, validated, bounded and
-   cancellable; they are never enabled by default.
-7. **Execution adapter** — maps transport-neutral execution contracts to local
-   process execution, preserving stdout, stderr and exit status.
-8. **Local state** — persists the controller-assigned identity and bounded
-   event ledger with private filesystem permissions.
-9. **Host facts** — exposes a small read-only `system.facts` capability for
+6. **Capability registry** — resolves only the supported, explicitly
+   registered OS-management capabilities; generic command and script execution
+   are not part of the Agent product profile.
+7. **Local state** — persists the controller-assigned identity, bounded event
+   ledger and durable operation lifecycle with private filesystem permissions.
+8. **Host facts** — exposes a small read-only `system.facts` capability for
    inventory refresh. Platform-specific metrics are best-effort and omitted
    when unavailable; sensitive host details are intentionally excluded.
-10. **Service operations** — exposes opt-in `service.status` and
-    `service.control` capabilities for exact, locally allowlisted Linux/systemd
-    units. Lifecycle actions require a separate local opt-in.
+9. **Service operations** — exposes opt-in `service.status` and
+   `service.control` capabilities for exact, locally allowlisted Linux/systemd
+   units. Lifecycle actions require a separate local opt-in.
 
 ## Authority boundaries
 
@@ -80,13 +79,11 @@ Every capability must:
 - expose a stable, documented capability name and version.
 
 The built-in `runtime.info` capability is read-only and reports limited
-runtime metadata plus the configured capability names. `system.facts` is also
+runtime metadata plus the registered capability names. `system.facts` is also
 read-only and returns a bounded, privacy-conscious host snapshot; it does not
 collect IP addresses, usernames, environment variables, process lists, mount
-lists or machine IDs. `exec.command` and
-`exec.script` are available only when `MACHINARCHY_AGENT_EXECUTION_ENABLED=true`.
-They use the common `machinarchy-protocol/execution/v1` contracts also intended
-for the controller's SSH executor. `service.status` and `service.control` are
-separately opt-in, Linux/systemd-specific capabilities backed by shared
-`services/v1` contracts. The Agent itself does not implement SSH. See
+lists or machine IDs. `service.status` and `service.control` are separately
+opt-in, Linux/systemd-specific capabilities backed by shared `services/v1`
+contracts. The Agent does not expose generic remote command execution and does
+not implement SSH. See
 [`../operations/phase5-service-management.md`](../operations/phase5-service-management.md).

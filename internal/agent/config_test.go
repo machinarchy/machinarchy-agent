@@ -17,7 +17,7 @@ func clearAgentEnv(t *testing.T) {
 		envNATSCredentialsFile, envNATSToken, envNATSUsername, envNATSPassword,
 		envConnectTimeout, envStartupTimeout, envReconnectWait, envReconnectJitter, envDrainTimeout,
 		envAgentStateFile, envAgentEnrollmentToken, envAgentVersion, envRegisterSubject, envLeaseRenewSubject, envRequestTimeout, envEventBufferSize, envJetStreamStream, envEventNakDelay,
-		envOperationWorkers, envOperationQueueSize, envOperationTimeout, envOperationInputLimit, envOperationOutputLimit, envResultPublishTimeout, envExecutionEnabled, envExecutionShellPath,
+		envOperationWorkers, envOperationQueueSize, envOperationTimeout, envOperationInputLimit, envOperationOutputLimit, envResultPublishTimeout, envRemovedExecutionEnabled,
 		envServiceManagementEnabled, envServiceControlEnabled, envServiceAllowlist, envSystemctlPath,
 	}
 	for _, key := range keys {
@@ -48,14 +48,8 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.JetStreamStream != agentv1.AgentEventsStreamName || cfg.EventNakDelay != 5*time.Second {
 		t.Fatalf("unexpected durable delivery defaults: stream=%q nak_delay=%s", cfg.JetStreamStream, cfg.EventNakDelay)
 	}
-	if cfg.CommandExecutionEnabled {
-		t.Fatal("command execution must be disabled by default")
-	}
 	if cfg.ServiceManagementEnabled || cfg.ServiceControlEnabled || len(cfg.AllowedServices) != 0 {
 		t.Fatal("service management must be disabled by default")
-	}
-	if cfg.ExecutionShellPath != "/bin/sh" {
-		t.Fatalf("ExecutionShellPath = %q", cfg.ExecutionShellPath)
 	}
 	if cfg.OperationWorkers != defaultOperationWorkers || cfg.OperationQueueSize != defaultOperationQueue {
 		t.Fatalf("unexpected operation defaults: workers=%d queue=%d", cfg.OperationWorkers, cfg.OperationQueueSize)
@@ -65,18 +59,12 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 }
 
-func TestLoadConfigEnablesCommandExecutionOnlyWhenExplicitlyRequested(t *testing.T) {
+func TestLoadConfigRejectsRemovedGenericExecutionOptIn(t *testing.T) {
 	clearAgentEnv(t)
 	t.Setenv(envAgentNATSURL, "nats://127.0.0.1:4222")
-	t.Setenv(envExecutionEnabled, "true")
-	t.Setenv(envExecutionShellPath, "/bin/sh")
-
-	cfg, err := LoadConfig()
-	if err != nil {
-		t.Fatalf("LoadConfig() error = %v", err)
-	}
-	if !cfg.CommandExecutionEnabled {
-		t.Fatal("CommandExecutionEnabled = false, want true")
+	t.Setenv(envRemovedExecutionEnabled, "true")
+	if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), "structured OS capabilities only") {
+		t.Fatalf("LoadConfig() error = %v, want explicit removed-capability error", err)
 	}
 }
 
@@ -215,28 +203,6 @@ func TestConfigRejectsURLCredentials(t *testing.T) {
 	}
 }
 
-func TestConfigExecutionRequiresReasonableOutputLimitAndAbsoluteShell(t *testing.T) {
-	tests := []struct {
-		name   string
-		mutate func(*Config)
-	}{
-		{name: "small output", mutate: func(c *Config) {
-			c.CommandExecutionEnabled = true
-			c.MaxOperationOutputBytes = minimumExecutionOutputBytes - 1
-		}},
-		{name: "relative shell", mutate: func(c *Config) { c.CommandExecutionEnabled = true; c.ExecutionShellPath = "sh" }},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			cfg := validTestConfig()
-			test.mutate(&cfg)
-			if err := cfg.Validate(); err == nil {
-				t.Fatal("Validate() succeeded for invalid command execution configuration")
-			}
-		})
-	}
-}
-
 func validTestConfig() Config {
 	return Config{
 		Environment:             "test",
@@ -261,7 +227,6 @@ func validTestConfig() Config {
 		AgentVersion:            "test",
 		RegistrationSubject:     "machinarchy.v1.agent.register",
 		LeaseRenewSubject:       "machinarchy.v1.agent.lease.renew",
-		ExecutionShellPath:      "/bin/sh",
 	}
 }
 

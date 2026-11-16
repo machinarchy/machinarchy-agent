@@ -1,5 +1,13 @@
 # Docker Deployment
 
+> **Current limitation:** this image runs the Agent process inside a container;
+> it is not yet a supported host OS-management deployment. A normal container
+> sees its own filesystem and does not automatically control the host's
+> systemd manager. Keep `MACHINARCHY_AGENT_SERVICE_MANAGEMENT_ENABLED=false`
+> and `MACHINARCHY_AGENT_SERVICE_CONTROL_ENABLED=false` in Docker deployments
+> until the dedicated host-integration phase is implemented and verified.
+
+
 Build:
 
 ```bash

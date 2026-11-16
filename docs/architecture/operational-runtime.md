@@ -5,6 +5,16 @@
 **Scope:** Define an original, production-oriented Agent for Machinarchy's hybrid SSH/Agent infrastructure platform.  
 **Design intent:** Borrow proven ideas from Salt, Ansible, Puppet, NATS and systemd where they solve real problems; do not reproduce their feature sets or internal architectures.
 
+> **Current Agent implementation scope (2026-11):** this document describes the
+> broader long-term Machinarchy operational model. The current Agent MVP is
+> intentionally narrower: `runtime.info`, `system.facts`, and opt-in
+> allowlisted Linux/systemd `service.status` and `service.control`. Generic
+> `exec.command` and `exec.script` are not exposed by the Agent. The shared
+> `execution/v1` contract remains available for the controller's independent SSH
+> transport. Package management, file deployment, users/groups, network
+> configuration, watchers and desired-state resources remain future proposals,
+> not current Agent capabilities.
+
 ---
 
 ## 1. Product direction
@@ -28,7 +38,12 @@ Both must fit the same inventory, operation and result model. A host may have SS
 
 ### Current starting point
 
-The current Agent package establishes a first execution slice: explicit `exec.command` and `exec.script` capabilities, bounded execution inputs/output, timeout and cancellation handling, and a transport-neutral execution contract. Keep that work as the starting point rather than replacing it with a new framework.
+The current Agent package provides the runtime/session foundation, durable
+operation lifecycle, host facts, and constrained Linux/systemd service
+operations. Generic command and script execution are intentionally excluded
+from the current Agent profile. The shared `execution/v1` contract remains a
+separate transport-neutral contract for controller-side SSH; it does not imply
+that the Agent exposes shell execution.
 
 The first reliability implementation adds a bounded local operation store, crash recovery rules, and a result outbox that retries until the controller acknowledges durable persistence. Inbound commands now bind to a controller-provisioned JetStream durable pull consumer. The controller-side overlay provides stream/consumer provisioning, DB-outbox publishing and persist-before-ack result handling contracts, but it has not yet been integrated with the actual controller database/broker packages or verified end-to-end. A command runner that works in a happy-path test is not yet a reliable fleet-management runtime.
 
@@ -41,7 +56,7 @@ This promise is more important than the number of built-in modules.
 ## 2. Design principles
 
 1. **Outcome before command.** Prefer typed, structured operations such as `service.ensure` over shell snippets for common administration.
-2. **Shell remains available.** Arbitrary commands and scripts are explicit, policy-controlled escape hatches, not the foundation of every feature.
+2. **Keep the Agent surface narrow.** Generic shell and script execution are not part of the current Agent MVP; the controller may operate its independent SSH transport under separate policy.
 3. **Predictable behavior.** The same request has the same meaning across SSH and Agent, or fails clearly when a transport cannot support it.
 4. **Safe by default.** Least privilege, bounded resources, explicit destructive behavior and no implicit privilege escalation.
 5. **Durability before cleverness.** Persist accepted work and pending results; do not rely on in-memory state for production correctness.
@@ -210,7 +225,7 @@ A capability should not be added merely because a command can be wrapped. It sho
 - safer behavior than a hand-written shell command;
 - reduced operational toil.
 
-Otherwise, `exec.command` or `exec.script` is enough.
+Otherwise, defer the feature rather than adding a generic shell wrapper to the Agent.
 
 ### 6.2 Capability descriptor
 
@@ -464,7 +479,7 @@ machinarchy-execd (privileged helper, optional)
 
 The privileged helper should be a deliberately small trusted component. It should accept only typed operations such as approved service control, package operations or file changes within explicitly permitted paths. It should verify peer credentials, validate every field, apply rate/time/resource limits and emit auditable results.
 
-`exec.command` and `exec.script` should run as the configured unprivileged Agent execution identity by default. They must not gain root through the helper. If an administrator explicitly chooses a different execution identity, make the risk visible and require host-local configuration.
+Generic command and script execution are outside the current Agent scope. Any future proposal to add them must be reviewed as a separate high-risk capability and must not silently change the Agent privilege model.
 
 This privilege-separated design is a target architecture. It should be implemented when privileged capabilities are introduced; do not build a broad generic root RPC interface.
 
