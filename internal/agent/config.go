@@ -12,38 +12,47 @@ import (
 	"time"
 
 	"github.com/machinarchy/machinarchy-protocol/agent/v1"
+	servicesv1 "github.com/machinarchy/machinarchy-protocol/services/v1"
 )
 
 const (
-	envAgentNATSURL         = "MACHINARCHY_AGENT_NATS_URL"
-	envEventBrokerURL       = "MACHINARCHY_EVENT_BROKER_URL"
-	envNATSURL              = "MACHINARCHY_NATS_URL"
-	envAgentName            = "MACHINARCHY_AGENT_NAME"
-	envEnvironment          = "MACHINARCHY_ENVIRONMENT"
-	envNATSCredentialsFile  = "MACHINARCHY_AGENT_NATS_CREDENTIALS_FILE"
-	envNATSToken            = "MACHINARCHY_AGENT_NATS_TOKEN"
-	envNATSUsername         = "MACHINARCHY_AGENT_NATS_USERNAME"
-	envNATSPassword         = "MACHINARCHY_AGENT_NATS_PASSWORD"
-	envConnectTimeout       = "MACHINARCHY_AGENT_CONNECT_TIMEOUT"
-	envStartupTimeout       = "MACHINARCHY_AGENT_STARTUP_TIMEOUT"
-	envReconnectWait        = "MACHINARCHY_AGENT_RECONNECT_WAIT"
-	envReconnectJitter      = "MACHINARCHY_AGENT_RECONNECT_JITTER"
-	envDrainTimeout         = "MACHINARCHY_AGENT_DRAIN_TIMEOUT"
-	envAgentStateFile       = "MACHINARCHY_AGENT_STATE_FILE"
-	envAgentEnrollmentToken = "MACHINARCHY_AGENT_ENROLLMENT_TOKEN"
-	envAgentVersion         = "MACHINARCHY_AGENT_VERSION"
-	envRegisterSubject      = "MACHINARCHY_AGENT_REGISTER_SUBJECT"
-	envLeaseRenewSubject    = "MACHINARCHY_AGENT_LEASE_RENEW_SUBJECT"
-	envRequestTimeout       = "MACHINARCHY_AGENT_REQUEST_TIMEOUT"
-	envEventBufferSize      = "MACHINARCHY_AGENT_EVENT_BUFFER_SIZE"
-	envOperationWorkers     = "MACHINARCHY_AGENT_OPERATION_WORKERS"
-	envOperationQueueSize   = "MACHINARCHY_AGENT_OPERATION_QUEUE_SIZE"
-	envOperationTimeout     = "MACHINARCHY_AGENT_OPERATION_TIMEOUT"
-	envOperationInputLimit  = "MACHINARCHY_AGENT_OPERATION_MAX_INPUT_BYTES"
-	envOperationOutputLimit = "MACHINARCHY_AGENT_OPERATION_MAX_OUTPUT_BYTES"
-	envResultPublishTimeout = "MACHINARCHY_AGENT_RESULT_PUBLISH_TIMEOUT"
-	envExecutionEnabled     = "MACHINARCHY_AGENT_EXECUTION_ENABLED"
-	envExecutionShellPath   = "MACHINARCHY_AGENT_EXECUTION_SHELL"
+	maxAllowedServices          = 64
+	envAgentNATSURL             = "MACHINARCHY_AGENT_NATS_URL"
+	envEventBrokerURL           = "MACHINARCHY_EVENT_BROKER_URL"
+	envNATSURL                  = "MACHINARCHY_NATS_URL"
+	envAgentName                = "MACHINARCHY_AGENT_NAME"
+	envEnvironment              = "MACHINARCHY_ENVIRONMENT"
+	envNATSCredentialsFile      = "MACHINARCHY_AGENT_NATS_CREDENTIALS_FILE"
+	envNATSToken                = "MACHINARCHY_AGENT_NATS_TOKEN"
+	envNATSUsername             = "MACHINARCHY_AGENT_NATS_USERNAME"
+	envNATSPassword             = "MACHINARCHY_AGENT_NATS_PASSWORD"
+	envConnectTimeout           = "MACHINARCHY_AGENT_CONNECT_TIMEOUT"
+	envStartupTimeout           = "MACHINARCHY_AGENT_STARTUP_TIMEOUT"
+	envReconnectWait            = "MACHINARCHY_AGENT_RECONNECT_WAIT"
+	envReconnectJitter          = "MACHINARCHY_AGENT_RECONNECT_JITTER"
+	envDrainTimeout             = "MACHINARCHY_AGENT_DRAIN_TIMEOUT"
+	envAgentStateFile           = "MACHINARCHY_AGENT_STATE_FILE"
+	envOperationStoreFile       = "MACHINARCHY_AGENT_OPERATION_STORE_FILE"
+	envAgentEnrollmentToken     = "MACHINARCHY_AGENT_ENROLLMENT_TOKEN"
+	envAgentVersion             = "MACHINARCHY_AGENT_VERSION"
+	envRegisterSubject          = "MACHINARCHY_AGENT_REGISTER_SUBJECT"
+	envLeaseRenewSubject        = "MACHINARCHY_AGENT_LEASE_RENEW_SUBJECT"
+	envRequestTimeout           = "MACHINARCHY_AGENT_REQUEST_TIMEOUT"
+	envEventBufferSize          = "MACHINARCHY_AGENT_EVENT_BUFFER_SIZE"
+	envJetStreamStream          = "MACHINARCHY_AGENT_JETSTREAM_STREAM"
+	envEventNakDelay            = "MACHINARCHY_AGENT_EVENT_NAK_DELAY"
+	envOperationWorkers         = "MACHINARCHY_AGENT_OPERATION_WORKERS"
+	envOperationQueueSize       = "MACHINARCHY_AGENT_OPERATION_QUEUE_SIZE"
+	envOperationTimeout         = "MACHINARCHY_AGENT_OPERATION_TIMEOUT"
+	envOperationInputLimit      = "MACHINARCHY_AGENT_OPERATION_MAX_INPUT_BYTES"
+	envOperationOutputLimit     = "MACHINARCHY_AGENT_OPERATION_MAX_OUTPUT_BYTES"
+	envResultPublishTimeout     = "MACHINARCHY_AGENT_RESULT_PUBLISH_TIMEOUT"
+	envExecutionEnabled         = "MACHINARCHY_AGENT_EXECUTION_ENABLED"
+	envExecutionShellPath       = "MACHINARCHY_AGENT_EXECUTION_SHELL"
+	envServiceManagementEnabled = "MACHINARCHY_AGENT_SERVICE_MANAGEMENT_ENABLED"
+	envServiceControlEnabled    = "MACHINARCHY_AGENT_SERVICE_CONTROL_ENABLED"
+	envServiceAllowlist         = "MACHINARCHY_AGENT_SERVICE_ALLOWLIST"
+	envSystemctlPath            = "MACHINARCHY_AGENT_SYSTEMCTL_PATH"
 )
 
 // Config contains process-local settings needed to establish the agent's
@@ -68,7 +77,8 @@ type Config struct {
 
 	// IdentityFile stores the control-plane-assigned identity and current lease
 	// credential. The file is created with restrictive permissions.
-	IdentityFile string
+	IdentityFile       string
+	OperationStoreFile string
 
 	// EnrollmentToken is a one-time bootstrap credential. It is never persisted
 	// by the agent and is only used when no registered identity exists.
@@ -79,6 +89,8 @@ type Config struct {
 	LeaseRenewSubject       string
 	RequestTimeout          time.Duration
 	EventBufferSize         int
+	JetStreamStream         string
+	EventNakDelay           time.Duration
 	OperationWorkers        int
 	OperationQueueSize      int
 	MaxOperationTimeout     time.Duration
@@ -90,6 +102,13 @@ type Config struct {
 	// and shell-script execution. It is disabled by default.
 	CommandExecutionEnabled bool
 	ExecutionShellPath      string
+
+	// Service management is separately opt-in and restricted to exact local
+	// systemd unit names. Mutating actions require an additional opt-in.
+	ServiceManagementEnabled bool
+	ServiceControlEnabled    bool
+	AllowedServices          []string
+	SystemctlPath            string
 }
 
 // LoadConfig loads and validates agent configuration from the process
@@ -110,34 +129,44 @@ func LoadConfig() (Config, error) {
 	)
 
 	cfg := Config{
-		Environment:             strings.ToLower(get(envEnvironment, "development")),
-		LogLevel:                strings.ToLower(get("MACHINARCHY_LOG_LEVEL", "info")),
-		ClientName:              get(envAgentName, "machinarchy-agent"),
-		BrokerURLs:              strings.TrimSpace(brokerURL),
-		CredentialsFile:         strings.TrimSpace(os.Getenv(envNATSCredentialsFile)),
-		Token:                   os.Getenv(envNATSToken),
-		Username:                os.Getenv(envNATSUsername),
-		Password:                os.Getenv(envNATSPassword),
-		ConnectTimeout:          5 * time.Second,
-		StartupTimeout:          30 * time.Second,
-		ReconnectWait:           2 * time.Second,
-		ReconnectJitter:         500 * time.Millisecond,
-		DrainTimeout:            10 * time.Second,
-		IdentityFile:            get(envAgentStateFile, defaultIdentityFile(strings.ToLower(get(envEnvironment, "development")))),
-		EnrollmentToken:         os.Getenv(envAgentEnrollmentToken),
-		AgentVersion:            get(envAgentVersion, "dev"),
-		RegistrationSubject:     get(envRegisterSubject, agentv1.SubjectRegisterAgent),
-		LeaseRenewSubject:       get(envLeaseRenewSubject, agentv1.SubjectRenewLease),
-		RequestTimeout:          5 * time.Second,
-		EventBufferSize:         defaultEventBufferSize,
-		OperationWorkers:        defaultOperationWorkers,
-		OperationQueueSize:      defaultOperationQueue,
-		MaxOperationTimeout:     5 * time.Minute,
-		MaxOperationInputBytes:  maxOperationInputBytes,
-		MaxOperationOutputBytes: maxOperationOutputBytes,
-		ResultPublishTimeout:    5 * time.Second,
-		CommandExecutionEnabled: false,
-		ExecutionShellPath:      "/bin/sh",
+		Environment:              strings.ToLower(get(envEnvironment, "development")),
+		LogLevel:                 strings.ToLower(get("MACHINARCHY_LOG_LEVEL", "info")),
+		ClientName:               get(envAgentName, "machinarchy-agent"),
+		BrokerURLs:               strings.TrimSpace(brokerURL),
+		CredentialsFile:          strings.TrimSpace(os.Getenv(envNATSCredentialsFile)),
+		Token:                    os.Getenv(envNATSToken),
+		Username:                 os.Getenv(envNATSUsername),
+		Password:                 os.Getenv(envNATSPassword),
+		ConnectTimeout:           5 * time.Second,
+		StartupTimeout:           30 * time.Second,
+		ReconnectWait:            2 * time.Second,
+		ReconnectJitter:          500 * time.Millisecond,
+		DrainTimeout:             10 * time.Second,
+		IdentityFile:             get(envAgentStateFile, defaultIdentityFile(strings.ToLower(get(envEnvironment, "development")))),
+		OperationStoreFile:       strings.TrimSpace(os.Getenv(envOperationStoreFile)),
+		EnrollmentToken:          os.Getenv(envAgentEnrollmentToken),
+		AgentVersion:             get(envAgentVersion, "dev"),
+		RegistrationSubject:      get(envRegisterSubject, agentv1.SubjectRegisterAgent),
+		LeaseRenewSubject:        get(envLeaseRenewSubject, agentv1.SubjectRenewLease),
+		RequestTimeout:           5 * time.Second,
+		EventBufferSize:          defaultEventBufferSize,
+		JetStreamStream:          agentv1.AgentEventsStreamName,
+		EventNakDelay:            5 * time.Second,
+		OperationWorkers:         defaultOperationWorkers,
+		OperationQueueSize:       defaultOperationQueue,
+		MaxOperationTimeout:      5 * time.Minute,
+		MaxOperationInputBytes:   maxOperationInputBytes,
+		MaxOperationOutputBytes:  maxOperationOutputBytes,
+		ResultPublishTimeout:     5 * time.Second,
+		CommandExecutionEnabled:  false,
+		ExecutionShellPath:       "/bin/sh",
+		ServiceManagementEnabled: false,
+		ServiceControlEnabled:    false,
+		SystemctlPath:            "/usr/bin/systemctl",
+	}
+
+	if cfg.OperationStoreFile == "" {
+		cfg.OperationStoreFile = cfg.IdentityFile + ".operations.json"
 	}
 
 	var err error
@@ -162,6 +191,10 @@ func LoadConfig() (Config, error) {
 	if cfg.EventBufferSize, err = positiveIntFromEnv(envEventBufferSize, cfg.EventBufferSize); err != nil {
 		return Config{}, err
 	}
+	cfg.JetStreamStream = get(envJetStreamStream, cfg.JetStreamStream)
+	if cfg.EventNakDelay, err = durationFromEnv(envEventNakDelay, cfg.EventNakDelay); err != nil {
+		return Config{}, err
+	}
 	if cfg.OperationWorkers, err = positiveIntFromEnv(envOperationWorkers, cfg.OperationWorkers); err != nil {
 		return Config{}, err
 	}
@@ -184,6 +217,22 @@ func LoadConfig() (Config, error) {
 		return Config{}, err
 	}
 	cfg.ExecutionShellPath = strings.TrimSpace(get(envExecutionShellPath, cfg.ExecutionShellPath))
+	if cfg.ServiceManagementEnabled, err = boolFromEnv(envServiceManagementEnabled, cfg.ServiceManagementEnabled); err != nil {
+		return Config{}, err
+	}
+	if cfg.ServiceControlEnabled, err = boolFromEnv(envServiceControlEnabled, cfg.ServiceControlEnabled); err != nil {
+		return Config{}, err
+	}
+	cfg.SystemctlPath = strings.TrimSpace(get(envSystemctlPath, cfg.SystemctlPath))
+	if raw := strings.TrimSpace(os.Getenv(envServiceAllowlist)); raw != "" {
+		for _, name := range strings.Split(raw, ",") {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				return Config{}, fmt.Errorf("%s must be a comma-separated list without empty entries", envServiceAllowlist)
+			}
+			cfg.AllowedServices = append(cfg.AllowedServices, name)
+		}
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -207,11 +256,28 @@ func (c Config) Validate() error {
 	if c.BrokerURLs == "" {
 		return fmt.Errorf("%s (or %s) is required", envAgentNATSURL, envEventBrokerURL)
 	}
+	if strings.TrimSpace(c.IdentityFile) == "" || strings.TrimSpace(c.IdentityFile) != c.IdentityFile || strings.ContainsAny(c.IdentityFile, "\r\n\x00") {
+		return errors.New("agent identity file path must be valid and non-empty")
+	}
+	if c.OperationStoreFile != "" {
+		if strings.TrimSpace(c.OperationStoreFile) != c.OperationStoreFile || strings.ContainsAny(c.OperationStoreFile, "\r\n\x00") {
+			return errors.New("agent operation store path is invalid")
+		}
+		if filepath.Clean(c.IdentityFile) == filepath.Clean(c.OperationStoreFile) {
+			return errors.New("agent identity and operation store must use different files")
+		}
+	}
 	if c.ConnectTimeout <= 0 || c.StartupTimeout <= 0 || c.ReconnectWait <= 0 || c.DrainTimeout <= 0 || c.RequestTimeout <= 0 || c.ReconnectJitter < 0 {
 		return errors.New("agent timeouts must be positive; reconnect jitter cannot be negative")
 	}
 	if c.EventBufferSize < 1 || c.EventBufferSize > maxEventBufferSize {
 		return fmt.Errorf("%s must be between 1 and %d", envEventBufferSize, maxEventBufferSize)
+	}
+	if !validJetStreamStreamName(c.JetStreamStream) {
+		return fmt.Errorf("%s must be a valid JetStream stream name", envJetStreamStream)
+	}
+	if c.EventNakDelay <= 0 || c.EventNakDelay > 5*time.Minute {
+		return fmt.Errorf("%s must be between 1ns and 5m", envEventNakDelay)
 	}
 	if c.OperationWorkers < 1 || c.OperationWorkers > maxOperationWorkers {
 		return fmt.Errorf("%s must be between 1 and %d", envOperationWorkers, maxOperationWorkers)
@@ -230,6 +296,29 @@ func (c Config) Validate() error {
 	}
 	if c.ResultPublishTimeout <= 0 {
 		return fmt.Errorf("%s must be positive", envResultPublishTimeout)
+	}
+	if c.ServiceControlEnabled && !c.ServiceManagementEnabled {
+		return fmt.Errorf("%s requires %s=true", envServiceControlEnabled, envServiceManagementEnabled)
+	}
+	if c.ServiceManagementEnabled {
+		if len(c.AllowedServices) == 0 || len(c.AllowedServices) > maxAllowedServices {
+			return fmt.Errorf("%s requires between 1 and %d exact .service unit names", envServiceAllowlist, maxAllowedServices)
+		}
+		if c.SystemctlPath == "" || !filepath.IsAbs(c.SystemctlPath) || strings.ContainsAny(c.SystemctlPath, "\r\n\x00") {
+			return fmt.Errorf("%s must be an absolute single-line executable path", envSystemctlPath)
+		}
+		seen := make(map[string]struct{}, len(c.AllowedServices))
+		for _, name := range c.AllowedServices {
+			if err := servicesv1.ValidateServiceName(name); err != nil {
+				return fmt.Errorf("%s contains an invalid unit name", envServiceAllowlist)
+			}
+			if _, exists := seen[name]; exists {
+				return fmt.Errorf("%s contains duplicate unit names", envServiceAllowlist)
+			}
+			seen[name] = struct{}{}
+		}
+	} else if len(c.AllowedServices) != 0 {
+		return fmt.Errorf("%s requires %s=true", envServiceAllowlist, envServiceManagementEnabled)
 	}
 	if c.CommandExecutionEnabled {
 		if c.MaxOperationOutputBytes < minimumExecutionOutputBytes {
@@ -443,4 +532,19 @@ func validateNATSSubject(name, subject string) error {
 		}
 	}
 	return nil
+}
+
+// validJetStreamStreamName applies the conservative subset of NATS stream-name
+// characters accepted by JetStream. It deliberately rejects dots and wildcard
+// tokens, which are meaningful in subjects but not in stream names.
+func validJetStreamStreamName(value string) bool {
+	if value == "" || len(value) > 128 || strings.TrimSpace(value) != value {
+		return false
+	}
+	for _, r := range value {
+		if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') && r != '_' && r != '-' {
+			return false
+		}
+	}
+	return true
 }

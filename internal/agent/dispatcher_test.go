@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,6 +16,7 @@ import (
 type memoryOperationPublisher struct {
 	mu      sync.Mutex
 	results []OperationResult
+	taken   []bool
 	updates chan OperationResult
 	err     error
 }
@@ -32,6 +34,7 @@ func (p *memoryOperationPublisher) PublishOperationResult(ctx context.Context, r
 	}
 	p.mu.Lock()
 	p.results = append(p.results, result)
+	p.taken = append(p.taken, false)
 	p.mu.Unlock()
 	select {
 	case p.updates <- result:
@@ -103,14 +106,71 @@ func awaitResult(t *testing.T, publisher *memoryOperationPublisher, status Opera
 	deadline := time.NewTimer(2 * time.Second)
 	defer deadline.Stop()
 	for {
-		select {
-		case result := <-publisher.updates:
-			if result.Status == status {
+		publisher.mu.Lock()
+		for index, result := range publisher.results {
+			if index < len(publisher.taken) && !publisher.taken[index] && result.Status == status {
+				publisher.taken[index] = true
+				publisher.mu.Unlock()
 				return result
 			}
+		}
+		publisher.mu.Unlock()
+		select {
+		case <-publisher.updates:
 		case <-deadline.C:
 			t.Fatalf("timed out waiting for operation result status %q; results=%#v", status, publisher.snapshot())
 		}
+	}
+}
+
+type failFirstOperationPublisher struct {
+	mu        sync.Mutex
+	remaining int
+	delegate  *memoryOperationPublisher
+}
+
+func (p *failFirstOperationPublisher) PublishOperationResult(ctx context.Context, result OperationResult) error {
+	p.mu.Lock()
+	if p.remaining > 0 {
+		p.remaining--
+		p.mu.Unlock()
+		return errors.New("temporary publisher failure")
+	}
+	p.mu.Unlock()
+	return p.delegate.PublishOperationResult(ctx, result)
+}
+
+func TestOperationAcceptancePublishFailureDoesNotTearDownExecution(t *testing.T) {
+	store := NewMemoryOperationStore()
+	registry := NewCapabilityRegistry()
+	if err := registry.Register("test.echo", CapabilityFunc(func(context.Context, json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(`{"completed":true}`), nil
+	})); err != nil {
+		t.Fatal(err)
+	}
+	delegate := newMemoryOperationPublisher()
+	publisher := &failFirstOperationPublisher{remaining: 3, delegate: delegate}
+	dispatcher, err := NewOperationDispatcherWithStore(validTestIdentity(), registry, publisher, store, testDispatcherConfig(1, 2), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := dispatcher.Shutdown(ctx); err != nil {
+			t.Errorf("Shutdown() error = %v", err)
+		}
+	})
+	event := operationEvent(validTestIdentity(), "event-accept-publish-failure", "operation-accept-publish-failure", "test.echo", `{}`, time.Second)
+	if err := dispatcher.Handle(context.Background(), event); err != nil {
+		t.Fatalf("Handle() error after acceptance publish failure = %v; durable work should continue", err)
+	}
+	result := awaitResult(t, delegate, OperationStatusSucceeded)
+	if result.OperationID != "operation-accept-publish-failure" {
+		t.Fatalf("completed operation ID = %q", result.OperationID)
 	}
 }
 
@@ -548,5 +608,121 @@ func TestOperationDispatcherAbortCancelsRunningCapability(t *testing.T) {
 	awaitResult(t, publisher, OperationStatusCancelled)
 	if err := dispatcher.Handle(context.Background(), operationEvent(validTestIdentity(), "event-after-abort", "operation-after-abort", "test.abort", `{}`, time.Second)); err == nil {
 		t.Fatal("dispatcher accepted an operation after abort")
+	}
+}
+
+func TestOperationDispatcherLateCancellationDoesNotOverwriteTerminalResult(t *testing.T) {
+	store := NewMemoryOperationStore()
+	registry := NewCapabilityRegistry()
+	if err := registry.Register("test.echo", CapabilityFunc(func(context.Context, json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(`{"ok":true}`), nil
+	})); err != nil {
+		t.Fatal(err)
+	}
+	publisher := newMemoryOperationPublisher()
+	dispatcher, err := NewOperationDispatcherWithStore(validTestIdentity(), registry, publisher, store, testDispatcherConfig(1, 2), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := dispatcher.Shutdown(ctx); err != nil {
+			t.Errorf("Shutdown() error = %v", err)
+		}
+	})
+	event := operationEvent(validTestIdentity(), "event-late-cancel-request", "operation-late-cancel", "test.echo", `{}`, time.Second)
+	if err := dispatcher.Handle(context.Background(), event); err != nil {
+		t.Fatalf("Handle(request) error = %v", err)
+	}
+	awaitResult(t, publisher, OperationStatusAccepted)
+	awaitResult(t, publisher, OperationStatusSucceeded)
+
+	// Simulate the bounded in-memory history evicting a terminal record while
+	// the durable operation record remains available for deduplication.
+	dispatcher.mu.Lock()
+	delete(dispatcher.records, "operation-late-cancel")
+	dispatcher.mu.Unlock()
+
+	if err := dispatcher.Handle(context.Background(), cancellationEvent(validTestIdentity(), "event-late-cancel", "operation-late-cancel")); err != nil {
+		t.Fatalf("Handle(late cancellation) error = %v", err)
+	}
+	stored, ok, err := store.Get(context.Background(), "operation-late-cancel")
+	if err != nil || !ok {
+		t.Fatalf("store.Get() = %#v, %v, %v", stored, ok, err)
+	}
+	if stored.Status != OperationStatusSucceeded || stored.Result == nil || stored.Result.Status != OperationStatusSucceeded {
+		t.Fatalf("late cancellation overwrote terminal operation: %#v", stored)
+	}
+}
+
+func TestQueueFullRejectionIsPersistedInResultOutbox(t *testing.T) {
+	started := make(chan struct{}, 1)
+	registry := NewCapabilityRegistry()
+	if err := registry.Register("test.block", CapabilityFunc(func(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})); err != nil {
+		t.Fatal(err)
+	}
+	publisher := newMemoryOperationPublisher()
+	store := NewMemoryOperationStore()
+	dispatcher, err := NewOperationDispatcherWithStore(validTestIdentity(), registry, publisher, store, testDispatcherConfig(1, 1), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := dispatcher.Abort(ctx); err != nil {
+			t.Errorf("Abort() error = %v", err)
+		}
+	}()
+
+	identity := validTestIdentity()
+	if err := dispatcher.Handle(context.Background(), operationEvent(identity, "event-qf-1", "operation-qf-1", "test.block", `{}`, 30*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first operation did not start")
+	}
+	if err := dispatcher.Handle(context.Background(), operationEvent(identity, "event-qf-2", "operation-qf-2", "test.block", `{}`, 30*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := dispatcher.Handle(context.Background(), operationEvent(identity, "event-qf-3", "operation-qf-3", "test.block", `{}`, 30*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	stored, exists, err := store.Get(context.Background(), "operation-qf-3")
+	if err != nil || !exists {
+		t.Fatalf("queue-full operation was not persisted: exists=%v err=%v", exists, err)
+	}
+	if stored.Status != OperationStatusRejected || stored.Result == nil || stored.Result.ErrorCode != "operation_queue_full" {
+		t.Fatalf("queue-full operation result is not durable: %#v", stored)
+	}
+	pending, err := store.PendingResults(context.Background(), time.Now().UTC().Add(resultRetryInterval+time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, result := range pending {
+		if result.OperationID == "operation-qf-3" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("queue-full rejection is missing from the durable result outbox")
 	}
 }

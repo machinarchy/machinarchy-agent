@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	agentv1 "github.com/machinarchy/machinarchy-protocol/agent/v1"
+	"github.com/machinarchy/machinarchy-protocol/agent/v1"
 )
 
 const (
@@ -29,17 +29,28 @@ type AgentEventType = agentv1.EventType
 type AgentEventEnvelope = agentv1.EventEnvelope
 
 const (
-	AgentEventOperationRequested = agentv1.EventOperationRequested
-	AgentEventOperationCancelled = agentv1.EventOperationCancelled
+	AgentEventOperationRequested          = agentv1.EventOperationRequested
+	AgentEventOperationCancelled          = agentv1.EventOperationCancelled
+	AgentEventOperationResultAcknowledged = agentv1.EventOperationResultAcknowledged
 )
 
+// EventMessage represents one broker delivery. The Agent acknowledges it only
+// after the event has been durably accepted by its local operation store and
+// event ledger. A delivery is at-least-once; handlers must remain idempotent.
+type EventMessage interface {
+	Payload() []byte
+	Ack(context.Context) error
+	Nak(context.Context, time.Duration) error
+	Term(context.Context) error
+}
+
 type EventSubscription interface {
-	Messages() <-chan []byte
+	Messages() <-chan EventMessage
 	Close() error
 }
 
 type EventSubscriber interface {
-	Subscribe(context.Context, string, int) (EventSubscription, error)
+	Subscribe(context.Context, string, string, int) (EventSubscription, error)
 }
 
 type EventLedger interface {
@@ -196,7 +207,7 @@ func ValidateAgentEventFor(e AgentEventEnvelope, identity AgentIdentity, now tim
 		return &InvalidAgentEventError{reason: "event target does not match this agent identity"}
 	}
 	switch e.EventType {
-	case AgentEventOperationRequested, AgentEventOperationCancelled:
+	case AgentEventOperationRequested, AgentEventOperationCancelled, AgentEventOperationResultAcknowledged:
 	default:
 		return &InvalidAgentEventError{reason: "unsupported event type"}
 	}

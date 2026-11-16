@@ -20,6 +20,8 @@ input; the execution payload itself is not tied to NATS or SSH.
 |---|---|---|
 | `exec.command` | Execute one program with an argument vector; no shell parsing | `executionv1.CommandRequest` |
 | `exec.script` | Execute script text using the locally configured shell | `executionv1.ScriptRequest` |
+| `service.status` | Inspect one locally allowlisted systemd unit | `servicesv1.StatusRequest` |
+| `service.control` | Start, stop or restart one locally allowlisted systemd unit | `servicesv1.ControlRequest` |
 
 `exec.command` never concatenates arguments into a shell command. The executable
 is resolved either from an absolute path or from a fixed Agent PATH. Relative
@@ -28,6 +30,15 @@ paths containing directory separators are rejected.
 `exec.script` always uses the Agent's configured shell path. The controller
 cannot choose an interpreter or shell flags. Script content is passed over
 stdin (`sh -s -- ...`), never interpolated into `sh -c`.
+
+The service capabilities are a separate structured interface, not wrappers
+around `exec.command`. They are available only when locally enabled, and only
+for exact unit names in `MACHINARCHY_AGENT_SERVICE_ALLOWLIST`. Status is
+read-only. Control accepts only `start`, `stop` and `restart` and requires a
+second local opt-in. Mutations for the same unit are serialized in one Agent
+process, but an `unknown` restart after a crash still requires operator
+reconciliation before retry. The initial backend is Linux/systemd only; see
+[`../operations/phase5-service-management.md`](../operations/phase5-service-management.md).
 
 Example command operation payload (the `output_limit_bytes` and timeout belong
 to the shared Agent operation envelope, not to the command input):
@@ -134,8 +145,16 @@ Before automatic Agent transport selection is enabled, the controller must:
 
 ## Delivery semantics
 
-This change does not add durable delivery. With the current NATS Core path, an
-in-flight operation or unpublished result can still be lost on disconnect or
-process crash. It also does not provide exactly-once process execution. The
-controller must treat an interrupted result as potentially unknown rather than
-blindly resubmitting the operation over SSH.
+The Agent now records accepted operations and terminal results in a bounded
+local operation store. It writes `running` before invoking a capability, resumes
+only operations still in `accepted`, and reports interrupted `running` work as
+`unknown` rather than replaying it. Results remain in the Agent outbox until
+the controller sends `operation.result.acknowledged` after durable persistence.
+
+This is not an exactly-once guarantee. Inbound commands now use a
+controller-provisioned JetStream durable pull consumer with explicit
+acknowledgements. The controller must publish from its transactional outbox,
+and result persistence must be idempotent before the acknowledgement event is
+published. The Agent-side operation guarantee begins after local durable
+acceptance, and arbitrary external side effects can still end in `unknown`
+after a crash.

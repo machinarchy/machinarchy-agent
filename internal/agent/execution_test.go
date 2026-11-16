@@ -182,8 +182,8 @@ func TestDefaultCapabilityRegistryOnlyEnablesExecutionWhenConfigured(t *testing.
 	if err != nil {
 		t.Fatalf("defaultCapabilityRegistry() error = %v", err)
 	}
-	if got := strings.Join(registry.Names(), ","); got != "runtime.info" {
-		t.Fatalf("default capabilities = %q, want runtime.info only", got)
+	if got := strings.Join(registry.Names(), ","); got != "runtime.info,system.facts" {
+		t.Fatalf("default capabilities = %q, want runtime.info,system.facts", got)
 	}
 
 	config.CommandExecutionEnabled = true
@@ -191,7 +191,7 @@ func TestDefaultCapabilityRegistryOnlyEnablesExecutionWhenConfigured(t *testing.
 	if err != nil {
 		t.Fatalf("defaultCapabilityRegistry(enabled) error = %v", err)
 	}
-	if got := strings.Join(registry.Names(), ","); got != "exec.command,exec.script,runtime.info" {
+	if got := strings.Join(registry.Names(), ","); got != "exec.command,exec.script,runtime.info,system.facts" {
 		t.Fatalf("enabled capabilities = %q", got)
 	}
 }
@@ -215,7 +215,7 @@ func TestRuntimeInfoReportsRegisteredCapabilities(t *testing.T) {
 	if err := json.Unmarshal(output, &result); err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Capabilities) != 1 || result.Capabilities[0] != "runtime.info" {
+	if len(result.Capabilities) != 2 || result.Capabilities[0] != "runtime.info" || result.Capabilities[1] != "system.facts" {
 		t.Fatalf("runtime.info capabilities = %#v", result.Capabilities)
 	}
 }

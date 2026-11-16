@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	agentv1 "github.com/machinarchy/machinarchy-protocol/agent/v1"
+	"github.com/machinarchy/machinarchy-protocol/agent/v1"
 )
 
 const agentProtocolVersion = agentv1.ProtocolVersion

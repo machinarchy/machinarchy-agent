@@ -34,8 +34,11 @@ payloads.
 
 ## Known limitations
 
-The initial Core NATS transport does not provide durable replay or explicit
-consumer acknowledgements. Local deduplication does not provide exactly-once
-execution. A durable operation journal, durable result handling and controller
-acknowledgement semantics remain production prerequisites for workflows that
-cannot tolerate lost work.
+Inbound commands use a durable JetStream pull consumer with explicit
+acknowledgements, but delivery remains at-least-once. Registration/lease
+request/reply and Agent result publication use Core NATS; terminal results are
+retried from the local result outbox until the controller sends an
+acknowledgement after committing persistence. Local deduplication and broker
+redelivery do not provide exactly-once execution. A crash after an external
+side effect can result in `unknown`, which must not be automatically retried
+without an explicit policy.

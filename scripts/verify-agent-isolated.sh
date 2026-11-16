@@ -7,7 +7,7 @@ WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "${WORK_DIR}"' EXIT
 
 mkdir -p "${WORK_DIR}/agent/cmd" "${WORK_DIR}/agent/internal" \
-  "${WORK_DIR}/protocol/agent" "${WORK_DIR}/protocol/execution" "${WORK_DIR}/testdeps/nats.go"
+  "${WORK_DIR}/protocol/agent" "${WORK_DIR}/protocol/execution" "${WORK_DIR}/protocol/hostfacts" "${WORK_DIR}/protocol/services" "${WORK_DIR}/testdeps/nats.go"
 cp -R "${ROOT_DIR}/cmd/machinarchy-agent" "${WORK_DIR}/agent/cmd/"
 cp -R "${ROOT_DIR}/internal/agent" "${WORK_DIR}/agent/internal/"
 if [[ -z "${PROTOCOL_DIR}" || ! -d "${PROTOCOL_DIR}/agent/v1" ]]; then
@@ -16,6 +16,8 @@ if [[ -z "${PROTOCOL_DIR}" || ! -d "${PROTOCOL_DIR}/agent/v1" ]]; then
 fi
 cp -R "${PROTOCOL_DIR}/agent/v1" "${WORK_DIR}/protocol/agent/"
 cp -R "${PROTOCOL_DIR}/execution/v1" "${WORK_DIR}/protocol/execution/"
+cp -R "${PROTOCOL_DIR}/hostfacts/v1" "${WORK_DIR}/protocol/hostfacts/"
+cp -R "${PROTOCOL_DIR}/services/v1" "${WORK_DIR}/protocol/services/"
 cp -R "${ROOT_DIR}/testsupport/nats.go/." "${WORK_DIR}/testdeps/nats.go/"
 
 cat > "${WORK_DIR}/agent/go.mod" <<'MOD'
@@ -38,6 +40,11 @@ module github.com/machinarchy/machinarchy-protocol
 go 1.23
 MOD
 
+cd "${WORK_DIR}/protocol"
+printf '%s\n' '== shared host facts protocol tests =='
+go test -count=1 ./...
+printf '%s\n' '== shared protocol go vet =='
+go vet ./...
 cd "${WORK_DIR}/agent"
 printf '%s\n' '== unit tests (stub NATS transport) =='
 go test -count=1 ./...
@@ -47,4 +54,6 @@ printf '%s\n' '== go vet =='
 go vet ./...
 printf '%s\n' '== build =='
 go build -o "${WORK_DIR}/machinarchy-agent" ./cmd/machinarchy-agent
+printf '%s\n' '== Windows cross-compile =='
+GOOS=windows GOARCH=amd64 go test -c -o "${WORK_DIR}/agent-windows.test.exe" ./internal/agent
 printf '%s\n' 'Isolated verification completed. This does not replace testing against the real NATS module or a live controller.'

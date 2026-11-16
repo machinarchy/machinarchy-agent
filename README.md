@@ -8,11 +8,12 @@ broker. It receives controller-authorized work and executes only explicitly
 registered capabilities.
 
 > **Development status:** this is an early hybrid-execution implementation.
-> The Agent runtime, enrollment/lease lifecycle, event validation, bounded
-> dispatcher, and opt-in local command/script capabilities are present. The
-> controller-side shared execution model, capability inventory, real NATS
-> integration and end-to-end transport tests must still be completed before
-> production deployment. Core NATS is not a durable work queue.
+> The Agent runtime, enrollment/lease lifecycle, bounded dispatcher, durable
+> local operation store/result outbox, and JetStream durable command consumer
+> are implemented as an initial integration slice. The controller overlay and
+> isolated tests are available, but actual controller integration, real NATS
+> integration and end-to-end failure tests remain required before production
+> deployment.
 
 ## Repository responsibilities
 
@@ -30,7 +31,21 @@ registered capabilities.
 
 Shared wire contracts are maintained in the separate
 [`machinarchy-protocol`](https://github.com/machinarchy/machinarchy-protocol)
-Go module. The controller and agent must use the same protocol release.
+Go module. The controller and agent must use a compatible protocol release.
+The current reliability work uses protocol v2; it is not compatible with a
+protocol-v1 controller. The controller must persist operation results before
+sending the result acknowledgement and must understand the `unknown` status.
+See [`docs/operations/phase2-rollout.md`](docs/operations/phase2-rollout.md)
+for the required controller changes and release order.
+
+The product direction and capability roadmap are documented in
+[`docs/architecture/operational-runtime.md`](docs/architecture/operational-runtime.md).
+The reliability work is incremental: the Agent now binds to a controller-
+provisioned JetStream durable pull consumer and retains terminal results until
+the controller acknowledges durable persistence. The controller must provision
+that consumer, publish commands from its database outbox, and durably process
+results before acknowledging them. See
+[`docs/operations/phase2-rollout.md`](docs/operations/phase2-rollout.md).
 
 ## Architecture at a glance
 
@@ -54,25 +69,43 @@ Machinarchy Agent
 
 ## Current implementation
 
-- NATS Core connectivity with authentication options and reconnect callbacks.
+- NATS Core request/reply for registration and lease renewal, plus a JetStream
+  durable pull consumer for inbound command/event delivery.
 - Versioned registration and lease request/reply client.
 - Controller-assigned agent identity with restrictive local file permissions.
 - Heartbeat/lease renewal and session recovery logic.
-- Agent-specific event subscription and envelope validation.
+- Agent-specific JetStream durable consumer binding and event envelope validation.
+- Explicit message acknowledgement after durable local event handling; delayed
+  negative acknowledgement on transient failures and terminal rejection of
+  invalid messages.
 - Bounded event buffers and a bounded event deduplication ledger.
 - Bounded operation queue and worker pool.
 - Per-operation deadline and cancellation support.
+- Bounded, permission-protected local operation store; accepted work is persisted before queueing and the `running` transition is persisted before capability execution.
+- Durable result outbox that retries terminal results until the controller acknowledges durable persistence.
+- Restart recovery resumes only operations known not to have started; interrupted in-flight operations become `unknown` and are not blindly re-executed.
 - Graceful shutdown/drain behavior.
 - A read-only `runtime.info` capability that reports the capabilities enabled
   in the local Agent configuration.
+- A read-only `system.facts` capability for controller-driven inventory
+  refresh. It reports hostname, OS/kernel, architecture, logical CPU count and
+  best-effort Linux memory, uptime and root-filesystem metrics. It intentionally
+  excludes IP addresses, usernames, environment variables, process lists and
+  machine IDs.
 - Opt-in `exec.command` and `exec.script` capabilities using shared, transport-
   neutral request/result contracts from `machinarchy-protocol/execution/v1`.
-- Bounded stdout/stderr capture, explicit child-process environment, operation
-  cancellation, and non-zero exit status reporting.
+- Opt-in Linux/systemd `service.status` and `service.control` capabilities. They
+  are restricted to an exact local `.service` allowlist; control operations
+  (`start`, `stop`, `restart`) require a separate opt-in.
+- Bounded stdout/stderr capture, explicit child-process environments, operation
+  cancellation, and non-zero exit status reporting. Systemd subprocesses use a
+  minimal fixed environment and never inherit Agent broker credentials.
 
-Command and script execution remain **disabled by default**. When enabled, work
-runs with the operating-system permissions of the Agent process. The Agent
-never silently elevates privileges.
+Command, script and service management remain **disabled by default**. Service
+status and control have separate opt-ins, and service control is limited to an
+exact local systemd unit allowlist. All operations use the operating-system
+permissions of the Agent process; the Agent never silently elevates privileges.
+See [`docs/operations/phase5-service-management.md`](docs/operations/phase5-service-management.md).
 
 ## Hybrid execution role
 
@@ -98,14 +131,18 @@ execution contract, security boundary and current controller integration work.
 
 - Go 1.26 or newer.
 - A Machinarchy controller implementing the matching protocol version.
-- A NATS endpoint reachable outbound from the managed host.
+- A NATS Server 2.9.0 or newer with JetStream enabled, reachable outbound from the managed host.
+- Linux is the initial production target; other operating systems remain
+  unsupported for production until their persistence and process-lifecycle
+  behavior are verified.
 - For production: `tls://` NATS endpoints and an approved NATS authentication
   method (credentials file, token, or username/password).
 
 ## Quick start
 
-1. Create the `machinarchy-protocol` repository from the companion protocol
-   bundle and publish its first development tag, `v0.1.0`.
+1. Create/update the `machinarchy-protocol` repository from the companion
+   protocol bundle and publish protocol module `v0.2.3` after reviewing the
+   protocol v2 compatibility requirements and additive `hostfacts/v1` and `services/v1` contracts.
 2. Clone both repositories into a sibling workspace:
 
    ```text
@@ -149,8 +186,11 @@ execution contract, security boundary and current controller integration work.
    ```
 
 A local NATS server alone is not sufficient: the controller must answer the
-registration and lease request/reply subjects before the session can become
-active.
+registration and lease request/reply subjects, enable JetStream, provision the
+shared command stream, and create this Agent's durable pull consumer before the
+session can become active. Do not deploy this protocol-v2 Agent with a v1
+controller. A production rollout also requires a durable controller-side
+result store and result acknowledgement after commit.
 
 ## Configuration
 
@@ -190,17 +230,26 @@ operation execution on production hosts.
 
 ## Compatibility and limitations
 
-- Protocol version is `v1`; breaking wire changes require a new protocol major
-  version or an explicitly negotiated compatibility process.
-- The current transport uses NATS Core. Messages published while an agent is
-  disconnected may be lost; Core NATS has no durable replay/consumer ack.
-- Event/operation deduplication is local state, not a distributed exactly-once
-  guarantee.
-- Accepted work and unpublished results can be lost on process crash because
-  a durable operation journal/result outbox is not yet implemented in this
-  agent runtime.
-- Controller integration must be tested with the actual controller database,
-  broker adapter, ACLs and operation resource model.
+- This release uses wire protocol version `2` from the `machinarchy-protocol`
+  module. It is not compatible with a protocol-v1 controller. See
+  [`docs/protocol/compatibility.md`](docs/protocol/compatibility.md).
+- Inbound command delivery uses a controller-provisioned JetStream durable
+  pull consumer with explicit acknowledgements. Registration/lease request-
+  reply and Agent result publication still use Core NATS. The controller must
+  provision the durable stream/consumer and retain its DB outbox item until a
+  JetStream publish acknowledgement is received.
+- Accepted operations and terminal results are persisted locally in a bounded,
+  permission-protected single-process store. Results remain in the outbox until
+  the controller acknowledges durable persistence. This does not protect
+  against host-disk loss or provide distributed exactly-once execution.
+- An operation found in `running` state after a process restart is reported as
+  `unknown`; it is never blindly re-executed because its external side effects
+  may already have occurred.
+- Production rollout is blocked until the controller provisions per-Agent
+  JetStream consumers, publishes from its durable database outbox, performs
+  idempotent result persistence/acknowledgement, and passes the scenarios in
+  [`docs/operations/phase2-rollout.md`](docs/operations/phase2-rollout.md)
+  against real NATS, controller storage and production-equivalent ACLs.
 
 ## License
 

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // NATSConnector is the agent-specific NATS transport adapter. It currently
@@ -79,16 +80,30 @@ func (c *NATSConnector) Connect(cfg Config, events chan<- ConnectionEvent) (Conn
 	if err != nil {
 		return nil, fmt.Errorf("initialize NATS connection: %w", err)
 	}
-	return &natsConnection{conn: nc, logger: c.logger}, nil
+	js, err := jetstream.New(nc, jetstream.WithDefaultTimeout(cfg.ConnectTimeout))
+	if err != nil {
+		nc.Close()
+		return nil, fmt.Errorf("initialize NATS JetStream client: %w", err)
+	}
+	return &natsConnection{conn: nc, js: js, streamName: cfg.JetStreamStream, logger: c.logger}, nil
 }
 
 type natsConnection struct {
-	conn   *nats.Conn
-	logger *slog.Logger
+	conn        *nats.Conn
+	js          jetstream.JetStream
+	streamName  string
+	logger      *slog.Logger
+	isConnected func() bool // Optional probe used by deterministic transport tests.
 }
 
 func (c *natsConnection) IsConnected() bool {
-	return c != nil && c.conn != nil && c.conn.IsConnected()
+	if c == nil {
+		return false
+	}
+	if c.isConnected != nil {
+		return c.isConnected()
+	}
+	return c.conn != nil && c.conn.IsConnected()
 }
 
 // Request performs a bounded NATS request/reply operation. The agent control
@@ -147,73 +162,168 @@ func (c *natsConnection) Publish(ctx context.Context, subject string, payload []
 	return ctx.Err()
 }
 
-// Subscribe creates a bounded asynchronous Core NATS subscription. Both
-// pending-message count and pending bytes are capped, and the local delivery
-// channel is bounded as well. A slow consumer can trigger a NATS slow-consumer
-// error; Core NATS does not provide durable replay or explicit acknowledgements.
-func (c *natsConnection) Subscribe(ctx context.Context, subject string, bufferSize int) (EventSubscription, error) {
+// Subscribe binds to a controller-provisioned durable pull consumer. The Agent
+// intentionally does not create or update JetStream streams/consumers: broker
+// administration belongs to the controller. Each delivered message remains
+// pending until the session acknowledges it after durable local acceptance.
+func (c *natsConnection) Subscribe(ctx context.Context, subject, durableName string, bufferSize int) (EventSubscription, error) {
 	if ctx == nil {
 		return nil, errors.New("NATS subscription context is required")
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if c == nil || c.conn == nil || c.conn.IsClosed() || !c.conn.IsConnected() {
+	if c == nil || c.conn == nil || !c.IsConnected() {
 		return nil, errors.New("NATS connection is not connected")
+	}
+	if c.js == nil {
+		return nil, errors.New("NATS JetStream client is not initialized")
 	}
 	if err := validateNATSSubject("agent event subject", subject); err != nil {
 		return nil, err
+	}
+	if !validJetStreamStreamName(durableName) {
+		return nil, errors.New("agent event durable consumer name is invalid")
 	}
 	if bufferSize < 1 || bufferSize > maxEventBufferSize {
 		return nil, fmt.Errorf("agent event buffer size must be between 1 and %d", maxEventBufferSize)
 	}
 
-	subCtx, cancel := context.WithCancel(ctx)
-	messages := make(chan []byte, bufferSize)
-	sub, err := c.conn.Subscribe(subject, func(message *nats.Msg) {
-		if message == nil {
-			return
-		}
-		if len(message.Data) > maxAgentEventBytes {
-			if c.logger != nil {
-				c.logger.Warn("dropping oversized agent event before enqueue", "message_bytes", len(message.Data), "maximum_bytes", maxAgentEventBytes)
-			}
-			return
-		}
-		data := append([]byte(nil), message.Data...)
-		select {
-		case messages <- data:
-		case <-subCtx.Done():
-		}
-	})
+	consumer, err := c.js.Consumer(ctx, c.streamName, durableName)
 	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("subscribe to NATS subject %q: %w", subject, err)
+		return nil, fmt.Errorf("bind to pre-provisioned agent event consumer %q: %w", durableName, err)
 	}
-	if err := sub.SetPendingLimits(bufferSize, maxPendingAgentEventBytes); err != nil {
-		cancel()
-		_ = sub.Unsubscribe()
-		return nil, fmt.Errorf("set bounded NATS pending limits for %q: %w", subject, err)
+	info, err := consumer.Info(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("inspect agent event consumer %q: %w", durableName, err)
 	}
-	// Flush confirms the server has processed the subscription before the
-	// caller considers it active.
-	if err := c.conn.FlushTimeout(2 * time.Second); err != nil {
-		cancel()
-		_ = sub.Unsubscribe()
-		return nil, fmt.Errorf("confirm NATS subscription %q: %w", subject, err)
+	if info.Config.FilterSubject != subject || info.Config.AckPolicy != jetstream.AckExplicitPolicy || info.Config.Durable != durableName {
+		return nil, fmt.Errorf("agent event consumer %q does not match required subject and explicit-ack configuration", durableName)
 	}
-	return &natsEventSubscription{messages: messages, cancel: cancel, subscription: sub}, nil
+
+	iterator, err := consumer.Messages(jetstream.PullMaxMessages(bufferSize))
+	if err != nil {
+		return nil, fmt.Errorf("start durable pull consumer %q: %w", durableName, err)
+	}
+	subCtx, cancel := context.WithCancel(ctx)
+	subscription := &natsEventSubscription{
+		messages: make(chan EventMessage, bufferSize),
+		cancel:   cancel,
+		iterator: iterator,
+		done:     make(chan struct{}),
+	}
+	go subscription.read(subCtx, iterator, c.logger)
+	return subscription, nil
+}
+
+type natsJetStreamEventMessage struct {
+	message jetstream.Msg
+	payload []byte
+}
+
+func (m *natsJetStreamEventMessage) Payload() []byte {
+	if m == nil {
+		return nil
+	}
+	return append([]byte(nil), m.payload...)
+}
+
+func (m *natsJetStreamEventMessage) Ack(ctx context.Context) error {
+	if m == nil || m.message == nil {
+		return errors.New("JetStream event message is nil")
+	}
+	if ctx == nil {
+		return errors.New("JetStream acknowledgement context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return m.message.DoubleAck(ctx)
+}
+
+func (m *natsJetStreamEventMessage) Nak(ctx context.Context, delay time.Duration) error {
+	if m == nil || m.message == nil {
+		return errors.New("JetStream event message is nil")
+	}
+	if ctx == nil {
+		return errors.New("JetStream negative acknowledgement context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if delay <= 0 {
+		return errors.New("JetStream negative acknowledgement delay must be positive")
+	}
+	return m.message.NakWithDelay(delay)
+}
+
+func (m *natsJetStreamEventMessage) Term(ctx context.Context) error {
+	if m == nil || m.message == nil {
+		return errors.New("JetStream event message is nil")
+	}
+	if ctx == nil {
+		return errors.New("JetStream termination context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return m.message.Term()
 }
 
 type natsEventSubscription struct {
-	messages     chan []byte
-	cancel       context.CancelFunc
-	subscription *nats.Subscription
-	once         sync.Once
-	err          error
+	messages chan EventMessage
+	cancel   context.CancelFunc
+	iterator jetstream.MessagesContext
+	done     chan struct{}
+	once     sync.Once
 }
 
-func (s *natsEventSubscription) Messages() <-chan []byte {
+func (s *natsEventSubscription) read(ctx context.Context, iterator jetstream.MessagesContext, logger *slog.Logger) {
+	defer close(s.done)
+	defer close(s.messages)
+	for {
+		message, err := iterator.Next(jetstream.NextContext(ctx))
+		if err != nil {
+			if ctx.Err() != nil || errors.Is(err, jetstream.ErrMsgIteratorClosed) {
+				return
+			}
+			if logger != nil {
+				logger.Warn("JetStream event iterator reported an error; continuing durable delivery", "error", err)
+			}
+			timer := time.NewTimer(500 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			continue
+		}
+		if message == nil {
+			continue
+		}
+		payload := append([]byte(nil), message.Data()...)
+		if len(payload) == 0 || len(payload) > maxAgentEventBytes {
+			// Oversized or empty messages are poison messages for this protocol.
+			// Term them so a malformed publish cannot permanently block the
+			// durable consumer. Protocol validation still happens in the session.
+			if err := message.Term(); err != nil && logger != nil {
+				logger.Warn("failed to terminate invalid-sized JetStream event", "error", err)
+			}
+			continue
+		}
+		delivery := &natsJetStreamEventMessage{message: message, payload: payload}
+		select {
+		case s.messages <- delivery:
+		case <-ctx.Done():
+			// Leave this delivery unacknowledged. JetStream will redeliver it
+			// after the consumer's AckWait interval.
+			return
+		}
+	}
+}
+
+func (s *natsEventSubscription) Messages() <-chan EventMessage {
 	if s == nil {
 		return nil
 	}
@@ -228,11 +338,14 @@ func (s *natsEventSubscription) Close() error {
 		if s.cancel != nil {
 			s.cancel()
 		}
-		if s.subscription != nil {
-			s.err = s.subscription.Unsubscribe()
+		if s.iterator != nil {
+			s.iterator.Stop()
 		}
 	})
-	return s.err
+	if s.done != nil {
+		<-s.done
+	}
+	return nil
 }
 
 func (c *natsConnection) Drain() error {

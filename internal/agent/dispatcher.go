@@ -15,6 +15,7 @@ import (
 
 	"github.com/machinarchy/machinarchy-protocol/agent/v1"
 	executionv1 "github.com/machinarchy/machinarchy-protocol/execution/v1"
+	servicesv1 "github.com/machinarchy/machinarchy-protocol/services/v1"
 )
 
 const (
@@ -45,6 +46,7 @@ const (
 	OperationStatusCancelled     = agentv1.OperationStatusCancelled
 	OperationStatusTimedOut      = agentv1.OperationStatusTimedOut
 	OperationStatusRejected      = agentv1.OperationStatusRejected
+	OperationStatusUnknown       = agentv1.OperationStatusUnknown
 )
 
 // MessagePublisher is the minimal outbound transport capability required to
@@ -190,6 +192,8 @@ func runtimeInfoCapability(agentVersion string, capabilities []string) Capabilit
 		if err := requireEmptyObject(input); err != nil {
 			return nil, err
 		}
+		registeredCapabilities := append([]string(nil), capabilities...)
+		sort.Strings(registeredCapabilities)
 		result := struct {
 			AgentVersion string   `json:"agent_version"`
 			GoVersion    string   `json:"go_version"`
@@ -197,7 +201,7 @@ func runtimeInfoCapability(agentVersion string, capabilities []string) Capabilit
 			Architecture string   `json:"architecture"`
 			CPUCount     int      `json:"cpu_count"`
 			Capabilities []string `json:"capabilities"`
-		}{AgentVersion: agentVersion, GoVersion: runtime.Version(), OS: runtime.GOOS, Architecture: runtime.GOARCH, CPUCount: runtime.NumCPU(), Capabilities: append([]string(nil), capabilities...)}
+		}{AgentVersion: agentVersion, GoVersion: runtime.Version(), OS: runtime.GOOS, Architecture: runtime.GOARCH, CPUCount: runtime.NumCPU(), Capabilities: registeredCapabilities}
 		return json.Marshal(result)
 	})
 }
@@ -250,16 +254,20 @@ type OperationDispatcher struct {
 	identity  AgentIdentity
 	registry  *CapabilityRegistry
 	publisher OperationResultPublisher
+	store     OperationStore
 	config    OperationDispatcherConfig
 	logger    *slog.Logger
 
 	mu           sync.Mutex
+	publishMu    sync.Mutex
+	outboxMu     sync.Mutex
 	started      bool
 	accepting    bool
 	stopping     bool
 	queue        chan *queuedOperation
 	slots        chan struct{}
 	records      map[string]operationRecord
+	queued       map[string]bool
 	order        []string
 	ctx          context.Context
 	cancel       context.CancelFunc
@@ -267,9 +275,14 @@ type OperationDispatcher struct {
 	resultCancel context.CancelFunc
 	workers      sync.WaitGroup
 	done         chan struct{}
+	outboxDone   chan struct{}
 }
 
 func NewOperationDispatcher(identity AgentIdentity, registry *CapabilityRegistry, publisher OperationResultPublisher, config OperationDispatcherConfig, logger *slog.Logger) (*OperationDispatcher, error) {
+	return NewOperationDispatcherWithStore(identity, registry, publisher, NewMemoryOperationStore(), config, logger)
+}
+
+func NewOperationDispatcherWithStore(identity AgentIdentity, registry *CapabilityRegistry, publisher OperationResultPublisher, store OperationStore, config OperationDispatcherConfig, logger *slog.Logger) (*OperationDispatcher, error) {
 	if err := identity.Validate(); err != nil || !identity.Registered() {
 		return nil, errors.New("registered agent identity is required for operation dispatch")
 	}
@@ -278,6 +291,9 @@ func NewOperationDispatcher(identity AgentIdentity, registry *CapabilityRegistry
 	}
 	if publisher == nil {
 		return nil, errors.New("operation result publisher is required")
+	}
+	if store == nil {
+		return nil, errors.New("durable operation store is required")
 	}
 	if config.Workers < 1 || config.Workers > maxOperationWorkers || config.QueueSize < 1 || config.QueueSize > maxOperationQueue {
 		return nil, errors.New("operation workers or queue size are outside supported limits")
@@ -290,10 +306,10 @@ func NewOperationDispatcher(identity AgentIdentity, registry *CapabilityRegistry
 	}
 	registry.seal()
 	return &OperationDispatcher{
-		identity: identity, registry: registry, publisher: publisher, config: config,
+		identity: identity, registry: registry, publisher: publisher, store: store, config: config,
 		logger: logger.With("component", "agent-operation-dispatcher"),
 		queue:  make(chan *queuedOperation, config.QueueSize), slots: make(chan struct{}, config.QueueSize),
-		records: make(map[string]operationRecord), done: make(chan struct{}),
+		records: make(map[string]operationRecord), queued: make(map[string]bool), done: make(chan struct{}), outboxDone: make(chan struct{}),
 	}, nil
 }
 
@@ -305,19 +321,86 @@ func (d *OperationDispatcher) Start(parent context.Context) error {
 		return err
 	}
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	if d.started {
+		d.mu.Unlock()
 		return errors.New("operation dispatcher has already started")
 	}
-	// Operation contexts must not be cancelled immediately when the session
-	// context ends. Session shutdown first closes inbound delivery, then gives
-	// accepted work the configured drain window. Fatal session failures use
-	// Abort to cancel work immediately. WithoutCancel preserves context values
-	// while detaching worker lifetime from the caller's cancellation signal.
-	d.ctx, d.cancel = context.WithCancel(context.WithoutCancel(parent))
-	d.resultCtx, d.resultCancel = context.WithCancel(context.Background())
+	d.mu.Unlock()
+
+	entries, err := d.store.List(parent)
+	if err != nil {
+		return fmt.Errorf("load durable operation history: %w", err)
+	}
+	runtimeCtx, runtimeCancel := context.WithCancel(context.WithoutCancel(parent))
+	resultCtx, resultCancel := context.WithCancel(context.Background())
+	cleanupOnError := true
+	defer func() {
+		if cleanupOnError {
+			runtimeCancel()
+			resultCancel()
+		}
+	}()
+
+	recovered := make([]*queuedOperation, 0)
+	recoveredEntries := make(map[string]StoredOperation, len(entries))
+	for _, entry := range entries {
+		switch entry.Status {
+		case OperationStatusAccepted:
+			if !entry.Event.ExpiresAt.After(time.Now()) {
+				result := d.result(entry.Event, entry.OperationID, entry.Capability, OperationStatusRejected, "operation_expired_before_execution", nil)
+				result.AcceptedAt, result.CompletedAt = entry.AcceptedAt, time.Now().UTC()
+				if err := d.store.Complete(parent, entry.OperationID, result); err != nil {
+					return fmt.Errorf("persist expired recovered operation: %w", err)
+				}
+				entry.Status, entry.Result = OperationStatusRejected, &result
+			} else {
+				op, recoverErr := d.recoverQueuedOperation(runtimeCtx, entry)
+				if recoverErr != nil {
+					result := d.result(entry.Event, entry.OperationID, entry.Capability, OperationStatusRejected, "capability_unavailable_after_restart", nil)
+					result.AcceptedAt, result.CompletedAt = entry.AcceptedAt, time.Now().UTC()
+					if storeErr := d.store.Complete(parent, entry.OperationID, result); storeErr != nil {
+						return fmt.Errorf("persist rejected recovered operation: %w", storeErr)
+					}
+					entry.Status, entry.Result = OperationStatusRejected, &result
+				} else {
+					recovered = append(recovered, op)
+				}
+			}
+		case OperationStatusRunning, OperationStatusCancelRequest:
+			// The Agent cannot know whether an external side effect completed.
+			// Preserve that uncertainty; never automatically launch it a second time.
+			result := d.result(entry.Event, entry.OperationID, entry.Capability, OperationStatusUnknown, "agent_restarted_during_execution", nil)
+			result.AcceptedAt, result.StartedAt, result.CompletedAt = entry.AcceptedAt, entry.StartedAt, time.Now().UTC()
+			if err := d.store.Complete(parent, entry.OperationID, result); err != nil {
+				return fmt.Errorf("persist unknown recovered operation: %w", err)
+			}
+			entry.Status, entry.Result = OperationStatusUnknown, &result
+		}
+		recoveredEntries[entry.OperationID] = entry
+	}
+	if len(recovered) > d.config.QueueSize {
+		return fmt.Errorf("durable accepted operation backlog (%d) exceeds configured queue capacity (%d); increase MACHINARCHY_AGENT_OPERATION_QUEUE_SIZE before restarting", len(recovered), d.config.QueueSize)
+	}
+
+	d.mu.Lock()
+	if d.started {
+		d.mu.Unlock()
+		return errors.New("operation dispatcher has already started")
+	}
+	d.ctx, d.cancel = runtimeCtx, runtimeCancel
+	d.resultCtx, d.resultCancel = resultCtx, resultCancel
 	d.started = true
 	d.accepting = true
+	for _, entry := range entries {
+		current := recoveredEntries[entry.OperationID]
+		d.records[entry.OperationID] = operationRecord{status: current.Status}
+		d.order = append(d.order, entry.OperationID)
+	}
+	for _, op := range recovered {
+		d.slots <- struct{}{}
+		d.queue <- op
+		d.queued[op.request.OperationID] = true
+	}
 	for range d.config.Workers {
 		d.workers.Add(1)
 		go d.worker()
@@ -326,7 +409,43 @@ func (d *OperationDispatcher) Start(parent context.Context) error {
 		d.workers.Wait()
 		close(d.done)
 	}()
+	go func() {
+		defer close(d.outboxDone)
+		d.resultOutboxLoop()
+	}()
+	d.mu.Unlock()
+	cleanupOnError = false
 	return nil
+}
+
+func (d *OperationDispatcher) recoverQueuedOperation(parent context.Context, entry StoredOperation) (*queuedOperation, error) {
+	capability, ok := d.registry.lookup(entry.Capability)
+	if !ok {
+		return nil, fmt.Errorf("capability %q is no longer registered", entry.Capability)
+	}
+	remaining := time.Until(entry.Event.ExpiresAt)
+	if remaining <= 0 {
+		return nil, errors.New("accepted operation has expired")
+	}
+	timeout := remaining
+	if entry.Request.TimeoutMilli > 0 && time.Duration(entry.Request.TimeoutMilli)*time.Millisecond < timeout {
+		timeout = time.Duration(entry.Request.TimeoutMilli) * time.Millisecond
+	}
+	if timeout > d.config.MaxOperationTimeout {
+		timeout = d.config.MaxOperationTimeout
+	}
+	request := entry.Request
+	if request.TimeoutMilli <= 0 {
+		request.TimeoutMilli = timeout.Milliseconds()
+	}
+	outputLimit := int(request.OutputLimitBytes)
+	if outputLimit < 1 || outputLimit > d.config.MaxOutputBytes {
+		outputLimit = d.config.MaxOutputBytes
+		request.OutputLimitBytes = int64(outputLimit)
+	}
+	opCtx, cancel := context.WithTimeout(parent, timeout)
+	opCtx = context.WithValue(opCtx, executionOutputLimitKey{}, outputLimit)
+	return &queuedOperation{request: request, event: entry.Event, capability: capability, ctx: opCtx, cancel: cancel, acceptedAt: entry.AcceptedAt}, nil
 }
 
 func (d *OperationDispatcher) Handle(ctx context.Context, event AgentEventEnvelope) error {
@@ -341,6 +460,8 @@ func (d *OperationDispatcher) Handle(ctx context.Context, event AgentEventEnvelo
 		return d.handleRequest(ctx, event)
 	case AgentEventOperationCancelled:
 		return d.handleCancellation(ctx, event)
+	case AgentEventOperationResultAcknowledged:
+		return d.handleResultAcknowledgement(ctx, event)
 	default:
 		return &InvalidAgentEventError{reason: "unsupported operation event type"}
 	}
@@ -351,10 +472,7 @@ func (d *OperationDispatcher) handleRequest(ctx context.Context, event AgentEven
 	if err != nil {
 		return err
 	}
-	capability, ok := d.registry.lookup(request.Capability)
-	if !ok {
-		return d.publishSimpleResult(ctx, event, request.OperationID, request.Capability, OperationStatusRejected, "capability_unavailable")
-	}
+	capability, capabilityAvailable := d.registry.lookup(request.Capability)
 	if request.TimeoutMilli == 0 {
 		request.TimeoutMilli = d.config.MaxOperationTimeout.Milliseconds()
 	}
@@ -388,48 +506,126 @@ func (d *OperationDispatcher) handleRequest(ctx context.Context, event AgentEven
 		d.mu.Unlock()
 		return errors.New("operation dispatcher is not accepting work")
 	}
-	if existing, exists := d.records[request.OperationID]; exists {
+	stored, exists, err := d.store.Get(ctx, request.OperationID)
+	if err != nil {
 		d.mu.Unlock()
-		if existing.status == OperationStatusCancelled {
-			return d.publishSimpleResult(ctx, event, request.OperationID, request.Capability, OperationStatusCancelled, "cancelled_before_execution")
+		return fmt.Errorf("inspect durable operation record: %w", err)
+	}
+	if exists {
+		if stored.Status == OperationStatusCancelled {
+			result := d.result(event, request.OperationID, request.Capability, OperationStatusCancelled, "cancelled_before_execution", nil)
+			result.AcceptedAt, result.CompletedAt = stored.AcceptedAt, time.Now().UTC()
+			if stored.Result == nil {
+				if err := d.store.Complete(ctx, request.OperationID, result); err != nil {
+					d.mu.Unlock()
+					return fmt.Errorf("persist cancellation result: %w", err)
+				}
+			}
+			d.records[request.OperationID] = operationRecord{status: OperationStatusCancelled}
+			d.mu.Unlock()
+			if err := d.publishPendingResults(ctx); err != nil {
+				d.logger.Warn("cancelled operation result remains in durable outbox", "operation_id", request.OperationID, "error", err)
+			}
+			return nil
 		}
-		d.logger.Debug("duplicate operation request ignored", "operation_id", request.OperationID)
+		if !sameStoredOperationRequest(stored, request) {
+			d.mu.Unlock()
+			return &InvalidAgentEventError{reason: "operation ID was reused with different content"}
+		}
+		if stored.Status == OperationStatusAccepted && !d.queued[request.OperationID] {
+			select {
+			case d.slots <- struct{}{}:
+			default:
+				d.mu.Unlock()
+				return errors.New("previously accepted operation could not be requeued because the local queue is full; restart the Agent to recover persisted accepted work")
+			}
+			op, recoverErr := d.recoverQueuedOperation(d.ctx, stored)
+			if recoverErr != nil {
+				<-d.slots
+				d.mu.Unlock()
+				return fmt.Errorf("requeue accepted operation: %w", recoverErr)
+			}
+			d.queue <- op
+			d.queued[request.OperationID] = true
+			d.records[request.OperationID] = operationRecord{status: OperationStatusAccepted, cancel: op.cancel}
+		}
+		status := stored.Status
+		acceptedAt := stored.AcceptedAt
+		d.mu.Unlock()
+		if status == OperationStatusAccepted {
+			accepted := d.result(event, request.OperationID, request.Capability, OperationStatusAccepted, "", nil)
+			accepted.AcceptedAt = acceptedAt
+			if err := d.publishResult(ctx, accepted); err != nil {
+				// Acceptance is already durable and the terminal result will use the
+				// durable outbox. A transient progress-notification failure must not
+				// tear down the whole Agent session.
+				d.logger.Warn("could not publish duplicate operation acceptance; durable operation remains active", "operation_id", request.OperationID, "error", err)
+			}
+			return nil
+		}
+		d.logger.Debug("duplicate operation request suppressed by durable operation ID", "operation_id", request.OperationID, "status", status)
+		return nil
+	}
+	if !capabilityAvailable {
+		// Persist unsupported-capability outcomes as well, so a redelivery cannot
+		// accidentally change the result after an Agent upgrade.
+		entry := StoredOperation{OperationID: request.OperationID, Capability: request.Capability, Request: request, Event: event, Status: OperationStatusAccepted, AcceptedAt: time.Now().UTC()}
+		_, created, storeErr := d.store.Accept(ctx, entry)
+		if storeErr != nil {
+			d.mu.Unlock()
+			return fmt.Errorf("persist rejected operation: %w", storeErr)
+		}
+		if created {
+			result := d.result(event, request.OperationID, request.Capability, OperationStatusRejected, "capability_unavailable", nil)
+			result.AcceptedAt, result.CompletedAt = entry.AcceptedAt, time.Now().UTC()
+			if err := d.store.Complete(ctx, request.OperationID, result); err != nil {
+				d.mu.Unlock()
+				return fmt.Errorf("persist unsupported capability result: %w", err)
+			}
+			d.records[request.OperationID] = operationRecord{status: OperationStatusRejected}
+			d.rememberLocked(request.OperationID)
+		}
+		d.mu.Unlock()
+		if err := d.publishPendingResults(ctx); err != nil {
+			d.logger.Warn("rejected capability result remains in durable outbox", "operation_id", request.OperationID, "error", err)
+		}
 		return nil
 	}
 	select {
 	case d.slots <- struct{}{}:
 	default:
 		d.mu.Unlock()
-		return d.publishSimpleResult(ctx, event, request.OperationID, request.Capability, OperationStatusRejected, "operation_queue_full")
+		return d.publishSimpleResult(ctx, event, request, OperationStatusRejected, "operation_queue_full")
 	}
 	opCtx, cancel := context.WithTimeout(d.ctx, timeout)
 	opCtx = context.WithValue(opCtx, executionOutputLimitKey{}, int(request.OutputLimitBytes))
-	op := &queuedOperation{request: request, event: event, capability: capability, ctx: opCtx, cancel: cancel, acceptedAt: time.Now().UTC()}
+	acceptedAt := time.Now().UTC()
+	op := &queuedOperation{request: request, event: event, capability: capability, ctx: opCtx, cancel: cancel, acceptedAt: acceptedAt}
+	entry := StoredOperation{OperationID: request.OperationID, Capability: request.Capability, Request: request, Event: event, Status: OperationStatusAccepted, AcceptedAt: acceptedAt}
+	_, created, err := d.store.Accept(ctx, entry)
+	if err != nil || !created {
+		cancel()
+		<-d.slots
+		d.mu.Unlock()
+		if err != nil {
+			return fmt.Errorf("persist operation acceptance: %w", err)
+		}
+		return errors.New("operation appeared concurrently during acceptance")
+	}
 	d.records[request.OperationID] = operationRecord{status: OperationStatusAccepted, cancel: cancel}
 	d.rememberLocked(request.OperationID)
+	d.queued[request.OperationID] = true
+	d.queue <- op // Capacity was reserved and durable acceptance completed first.
 	d.mu.Unlock()
 
 	accepted := d.result(event, request.OperationID, request.Capability, OperationStatusAccepted, "", nil)
-	accepted.AcceptedAt = op.acceptedAt
+	accepted.AcceptedAt = acceptedAt
 	if err := d.publishResult(ctx, accepted); err != nil {
-		cancel()
-		d.mu.Lock()
-		delete(d.records, request.OperationID)
-		<-d.slots
-		d.mu.Unlock()
-		return fmt.Errorf("publish operation acceptance: %w", err)
+		// The operation remains durably accepted and queued. The terminal result
+		// is persisted and retried through the outbox, so this progress notice is
+		// best-effort and must not tear down the Agent session.
+		d.logger.Warn("operation acceptance notification failed; operation remains durably queued", "operation_id", request.OperationID, "error", err)
 	}
-
-	d.mu.Lock()
-	if !d.accepting {
-		delete(d.records, request.OperationID)
-		<-d.slots
-		d.mu.Unlock()
-		cancel()
-		return errors.New("operation dispatcher stopped before operation enqueue")
-	}
-	d.queue <- op // A slot was reserved before publishing acceptance, so this send is bounded and cannot block.
-	d.mu.Unlock()
 	return nil
 }
 
@@ -441,25 +637,68 @@ func (d *OperationDispatcher) handleCancellation(ctx context.Context, event Agen
 	if !validEventIdentifier(request.OperationID) || len(request.Reason) > 256 || strings.ContainsAny(request.Reason, "\r\n\x00") {
 		return &InvalidAgentEventError{reason: "operation cancellation fields are invalid"}
 	}
+	stored, storedExists, err := d.store.Get(ctx, request.OperationID)
+	if err != nil {
+		return fmt.Errorf("inspect operation before cancellation: %w", err)
+	}
+	if storedExists && isTerminalOperationStatus(stored.Status) {
+		d.logger.Debug("ignoring cancellation for an already terminal operation", "operation_id", request.OperationID, "status", stored.Status)
+		return nil
+	}
+	if err := d.store.MarkCancellation(ctx, request.OperationID, event); err != nil {
+		return fmt.Errorf("persist operation cancellation: %w", err)
+	}
 	d.mu.Lock()
 	record, exists := d.records[request.OperationID]
 	if !exists {
 		d.records[request.OperationID] = operationRecord{status: OperationStatusCancelled}
 		d.rememberLocked(request.OperationID)
 		d.mu.Unlock()
-		return d.publishSimpleResult(ctx, event, request.OperationID, "", OperationStatusCancelled, "cancelled_before_execution")
+		result := d.result(event, request.OperationID, "", OperationStatusCancelled, "cancelled_before_execution", nil)
+		result.CompletedAt = time.Now().UTC()
+		if err := d.store.Complete(ctx, request.OperationID, result); err != nil {
+			return fmt.Errorf("persist cancellation tombstone result: %w", err)
+		}
+		if err := d.publishPendingResults(ctx); err != nil {
+			d.logger.Warn("pre-execution cancellation result remains in durable outbox", "operation_id", request.OperationID, "error", err)
+		}
+		return nil
 	}
 	if record.status == OperationStatusAccepted || record.status == OperationStatusRunning || record.status == OperationStatusCancelRequest {
 		if record.cancel != nil {
 			record.cancel()
 		}
-		// Keep the record non-terminal until the worker has actually exited.
-		// Otherwise a high admission rate could prune it while execution is still unwinding.
+		// Keep the record non-terminal until the worker confirms it has exited.
 		d.records[request.OperationID] = operationRecord{status: OperationStatusCancelRequest, cancel: record.cancel}
 	}
 	d.mu.Unlock()
 	d.logger.Info("operation cancellation requested", "operation_id", request.OperationID)
 	return nil
+}
+
+func (d *OperationDispatcher) handleResultAcknowledgement(ctx context.Context, event AgentEventEnvelope) error {
+	var acknowledgement agentv1.OperationResultAcknowledgement
+	if err := decodeStrictObject(event.Payload, &acknowledgement, 1024); err != nil || !validEventIdentifier(acknowledgement.OperationID) {
+		return &InvalidAgentEventError{reason: "operation result acknowledgement is invalid"}
+	}
+	if err := d.store.AcknowledgeResult(ctx, acknowledgement.OperationID); err != nil {
+		// A duplicate acknowledgement is harmless after its result was already
+		// removed; treat that case as idempotent.
+		if strings.Contains(err.Error(), "not pending acknowledgement") || strings.Contains(err.Error(), "does not exist") {
+			return nil
+		}
+		return fmt.Errorf("acknowledge durable operation result: %w", err)
+	}
+	d.logger.Debug("controller acknowledged operation result", "operation_id", acknowledgement.OperationID)
+	return nil
+}
+
+func sameStoredOperationRequest(stored StoredOperation, request OperationRequestPayload) bool {
+	digest := operationRequestDigest(request)
+	if stored.RequestDigest != "" {
+		return stored.RequestDigest == digest
+	}
+	return stored.Capability == request.Capability && bytes.Equal(stored.Request.Input, request.Input)
 }
 
 func decodeOperationRequest(payload json.RawMessage, maxInput int) (OperationRequestPayload, error) {
@@ -518,6 +757,18 @@ func (d *OperationDispatcher) execute(op *queuedOperation) {
 	}
 	d.records[op.request.OperationID] = operationRecord{status: OperationStatusRunning, cancel: op.cancel}
 	d.mu.Unlock()
+	if err := d.store.MarkRunning(context.Background(), op.request.OperationID, started); err != nil {
+		d.mu.Lock()
+		delete(d.queued, op.request.OperationID)
+		d.records[op.request.OperationID] = operationRecord{status: OperationStatusAccepted}
+		d.mu.Unlock()
+		d.logger.Error("could not durably mark operation running; refusing to execute until it can be safely recovered", "operation_id", op.request.OperationID, "error", err)
+		op.cancel()
+		return
+	}
+	d.mu.Lock()
+	delete(d.queued, op.request.OperationID)
+	d.mu.Unlock()
 
 	output, err := safeExecuteCapability(op.ctx, op.capability, op.request.Input)
 	status := OperationStatusSucceeded
@@ -570,27 +821,98 @@ func safeExecuteCapability(ctx context.Context, capability Capability, input jso
 func (d *OperationDispatcher) complete(op *queuedOperation, status OperationStatus, code string, output json.RawMessage, started time.Time) {
 	completed := time.Now().UTC()
 	op.cancel()
-	d.mu.Lock()
-	d.records[op.request.OperationID] = operationRecord{status: status}
-	d.mu.Unlock()
-
 	result := d.result(op.event, op.request.OperationID, op.request.Capability, status, code, output)
 	result.AcceptedAt = op.acceptedAt
 	result.StartedAt = started
 	result.CompletedAt = completed
 	result.DurationMillis = completed.Sub(started).Milliseconds()
-	if err := d.publishResultDetached(result); err != nil {
-		d.logger.Error("publish operation result failed", "operation_id", op.request.OperationID, "status", status, "error_code", "result_publish_failed")
+	if err := d.store.Complete(context.Background(), op.request.OperationID, result); err != nil {
+		d.logger.Error("could not durably record operation result; result will not be advertised", "operation_id", op.request.OperationID, "status", status, "error", err)
 		return
+	}
+	d.mu.Lock()
+	d.records[op.request.OperationID] = operationRecord{status: status}
+	d.mu.Unlock()
+	if err := d.publishPendingResults(context.Background()); err != nil {
+		d.logger.Warn("operation result remains in durable outbox", "operation_id", op.request.OperationID, "error", err)
 	}
 	d.logger.Info("operation completed", "operation_id", op.request.OperationID, "capability", op.request.Capability, "status", status, "duration_ms", result.DurationMillis)
 }
 
-func (d *OperationDispatcher) publishSimpleResult(ctx context.Context, event AgentEventEnvelope, operationID, capability string, status OperationStatus, code string) error {
-	result := d.result(event, operationID, capability, status, code, nil)
+func (d *OperationDispatcher) resultOutboxLoop() {
+	if err := d.publishPendingResults(d.resultCtx); err != nil && d.resultCtx.Err() == nil {
+		d.logger.Warn("initial operation result outbox flush failed", "error", err)
+	}
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-d.resultCtx.Done():
+			return
+		case <-ticker.C:
+			if err := d.publishPendingResults(d.resultCtx); err != nil && d.resultCtx.Err() == nil {
+				d.logger.Warn("retrying pending operation result outbox", "error", err)
+			}
+		}
+	}
+}
+
+func (d *OperationDispatcher) publishPendingResults(ctx context.Context) error {
+	d.outboxMu.Lock()
+	defer d.outboxMu.Unlock()
+	results, err := d.store.PendingResults(ctx, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("load pending operation results: %w", err)
+	}
+	var failures []error
+	for _, result := range results {
+		if err := d.publishResultDetached(result); err != nil {
+			failures = append(failures, fmt.Errorf("publish operation %s: %w", result.OperationID, err))
+			continue
+		}
+		if err := d.store.MarkResultPublished(context.Background(), result.OperationID, time.Now().UTC()); err != nil {
+			failures = append(failures, fmt.Errorf("record operation %s publish time: %w", result.OperationID, err))
+		}
+	}
+	return errors.Join(failures...)
+}
+
+func (d *OperationDispatcher) publishSimpleResult(ctx context.Context, event AgentEventEnvelope, request OperationRequestPayload, status OperationStatus, code string) error {
+	// Even admission rejections must use the durable result outbox. Otherwise
+	// the controller cannot safely acknowledge the corresponding JetStream
+	// command: the Agent would have no pending result to retire after a restart.
+	acceptedAt := time.Now().UTC()
+	entry := StoredOperation{
+		OperationID: request.OperationID,
+		Capability:  request.Capability,
+		Request:     request,
+		Event:       event,
+		Status:      OperationStatusAccepted,
+		AcceptedAt:  acceptedAt,
+	}
+	stored, created, err := d.store.Accept(ctx, entry)
+	if err != nil {
+		return fmt.Errorf("persist rejected operation acceptance: %w", err)
+	}
+	if !created {
+		if stored.Status == status && stored.Result != nil {
+			return d.publishPendingResults(ctx)
+		}
+		return errors.New("operation appeared concurrently while rejecting queue-full request")
+	}
+
+	result := d.result(event, request.OperationID, request.Capability, status, code, nil)
+	result.AcceptedAt = acceptedAt
 	result.CompletedAt = time.Now().UTC()
-	if err := d.publishResult(ctx, result); err != nil {
-		return fmt.Errorf("publish operation %s result: %w", status, err)
+	if err := d.store.Complete(ctx, request.OperationID, result); err != nil {
+		return fmt.Errorf("persist rejected operation result: %w", err)
+	}
+	d.mu.Lock()
+	d.records[request.OperationID] = operationRecord{status: status}
+	d.rememberLocked(request.OperationID)
+	d.mu.Unlock()
+	if err := d.publishPendingResults(ctx); err != nil {
+		d.logger.Warn("queue-full rejection remains in durable result outbox", "operation_id", request.OperationID, "error", err)
 	}
 	return nil
 }
@@ -619,6 +941,8 @@ func (d *OperationDispatcher) publishResultDetached(result OperationResult) erro
 }
 
 func (d *OperationDispatcher) publishWithRetry(ctx context.Context, result OperationResult) error {
+	d.publishMu.Lock()
+	defer d.publishMu.Unlock()
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if err := d.publisher.PublishOperationResult(ctx, result); err == nil {
@@ -665,7 +989,7 @@ func (d *OperationDispatcher) rememberLocked(operationID string) {
 
 func isTerminalOperationStatus(status OperationStatus) bool {
 	switch status {
-	case OperationStatusSucceeded, OperationStatusFailed, OperationStatusCancelled, OperationStatusTimedOut, OperationStatusRejected:
+	case OperationStatusSucceeded, OperationStatusFailed, OperationStatusCancelled, OperationStatusTimedOut, OperationStatusRejected, OperationStatusUnknown:
 		return true
 	default:
 		return false
@@ -702,6 +1026,9 @@ func (d *OperationDispatcher) cancelActive() {
 func (d *OperationDispatcher) finishResults() {
 	if d.resultCancel != nil {
 		d.resultCancel()
+	}
+	if d.outboxDone != nil {
+		<-d.outboxDone
 	}
 }
 
@@ -784,13 +1111,39 @@ func (d *OperationDispatcher) Abort(ctx context.Context) error {
 }
 
 func defaultCapabilityRegistry(agentVersion string, config Config) (*CapabilityRegistry, error) {
-	capabilityNames := []string{"runtime.info"}
+	capabilityNames := []string{"runtime.info", "system.facts"}
+	if config.ServiceManagementEnabled {
+		capabilityNames = append(capabilityNames, servicesv1.CapabilityStatus)
+		if config.ServiceControlEnabled {
+			capabilityNames = append(capabilityNames, servicesv1.CapabilityControl)
+		}
+	}
 	if config.CommandExecutionEnabled {
 		capabilityNames = append(capabilityNames, executionv1.CapabilityCommand, executionv1.CapabilityScript)
 	}
 	registry := NewCapabilityRegistry()
 	if err := registry.Register("runtime.info", runtimeInfoCapability(agentVersion, capabilityNames)); err != nil {
 		return nil, err
+	}
+	if err := registry.Register("system.facts", SystemFactsCapability(agentVersion)); err != nil {
+		return nil, err
+	}
+	if config.ServiceManagementEnabled {
+		statusCapability, controlCapability, err := newPlatformServiceCapabilities(ServiceCapabilityConfig{
+			SystemctlPath: config.SystemctlPath, AllowedServices: config.AllowedServices,
+			ControlEnabled: config.ServiceControlEnabled,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("initialize service management capabilities: %w", err)
+		}
+		if err := registry.Register(servicesv1.CapabilityStatus, statusCapability); err != nil {
+			return nil, err
+		}
+		if config.ServiceControlEnabled {
+			if err := registry.Register(servicesv1.CapabilityControl, controlCapability); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if config.CommandExecutionEnabled {
 		commandCapability, scriptCapability, err := NewExecutionCapabilities(ExecutionCapabilityConfig{

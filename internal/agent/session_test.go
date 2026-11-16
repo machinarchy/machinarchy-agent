@@ -181,12 +181,42 @@ func TestRetryDelayRejectsExpiredLease(t *testing.T) {
 	}
 }
 
+type fakeEventMessage struct {
+	payload []byte
+	acked   atomic.Bool
+	nacked  atomic.Bool
+	termed  atomic.Bool
+}
+
+func (m *fakeEventMessage) Payload() []byte { return append([]byte(nil), m.payload...) }
+func (m *fakeEventMessage) Ack(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.acked.Store(true)
+	return nil
+}
+func (m *fakeEventMessage) Nak(ctx context.Context, _ time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.nacked.Store(true)
+	return nil
+}
+func (m *fakeEventMessage) Term(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.termed.Store(true)
+	return nil
+}
+
 type fakeEventSubscription struct {
-	messages chan []byte
+	messages chan EventMessage
 	closed   bool
 }
 
-func (s *fakeEventSubscription) Messages() <-chan []byte { return s.messages }
+func (s *fakeEventSubscription) Messages() <-chan EventMessage { return s.messages }
 func (s *fakeEventSubscription) Close() error {
 	s.closed = true
 	return nil
@@ -195,6 +225,7 @@ func (s *fakeEventSubscription) Close() error {
 type fakeSessionConnection struct {
 	connected    atomic.Bool
 	subject      string
+	consumerName string
 	subscription *fakeEventSubscription
 	subscribed   chan struct{}
 	drained      bool
@@ -230,9 +261,10 @@ func (c *fakeSessionConnection) Publish(_ context.Context, subject string, paylo
 	c.published = append(c.published, result)
 	return nil
 }
-func (c *fakeSessionConnection) Subscribe(_ context.Context, subject string, buffer int) (EventSubscription, error) {
+func (c *fakeSessionConnection) Subscribe(_ context.Context, subject, consumerName string, buffer int) (EventSubscription, error) {
 	c.subject = subject
-	c.subscription = &fakeEventSubscription{messages: make(chan []byte, buffer)}
+	c.consumerName = consumerName
+	c.subscription = &fakeEventSubscription{messages: make(chan EventMessage, buffer)}
 	close(c.subscribed)
 	return c.subscription, nil
 }
@@ -264,7 +296,8 @@ func TestAgentSessionSubscribesAfterLeaseAndProcessesTargetedEvent(t *testing.T)
 		t.Fatalf("subscription subject = %q", conn.subject)
 	}
 	event := validTestEvent(identity, time.Now())
-	conn.subscription.messages <- encodeTestEvent(t, event)
+	delivery := &fakeEventMessage{payload: encodeTestEvent(t, event)}
+	conn.subscription.messages <- delivery
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
@@ -281,6 +314,14 @@ func TestAgentSessionSubscribesAfterLeaseAndProcessesTargetedEvent(t *testing.T)
 			t.Fatal("agent did not record the handled event")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	if !delivery.acked.Load() {
+		cancel()
+		t.Fatal("agent did not acknowledge the event after durable handling")
+	}
+	if conn.consumerName != "agent_agent-123" {
+		cancel()
+		t.Fatalf("durable consumer name = %q", conn.consumerName)
 	}
 
 	cancel()
@@ -374,7 +415,8 @@ func TestAgentSessionPausesEventConsumptionUntilLeaseRenewedAfterReconnect(t *te
 	deferredEvent := validTestEvent(identity, time.Now())
 	deferredEvent.EventID = "event-after-reconnect"
 	deferredEvent.Payload = json.RawMessage(`{"operation_id":"operation-after-reconnect","capability":"runtime.info","input":{},"timeout_ms":30000}`)
-	conn.subscription.messages <- encodeTestEvent(t, deferredEvent)
+	deferredDelivery := &fakeEventMessage{payload: encodeTestEvent(t, deferredEvent)}
+	conn.subscription.messages <- deferredDelivery
 	time.Sleep(50 * time.Millisecond)
 	seen, err := session.ledger.Contains(context.Background(), deferredEvent.EventID)
 	if err != nil {
@@ -403,6 +445,10 @@ func TestAgentSessionPausesEventConsumptionUntilLeaseRenewedAfterReconnect(t *te
 			t.Fatal("agent did not resume event processing after lease renewal")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	if !deferredDelivery.acked.Load() {
+		cancel()
+		t.Fatal("agent did not acknowledge the event after reconnect processing")
 	}
 
 	cancel()

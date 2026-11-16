@@ -3,8 +3,11 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	agentv1 "github.com/machinarchy/machinarchy-protocol/agent/v1"
 )
 
 func clearAgentEnv(t *testing.T) {
@@ -13,8 +16,9 @@ func clearAgentEnv(t *testing.T) {
 		envAgentNATSURL, envEventBrokerURL, envNATSURL, envAgentName, envEnvironment, "MACHINARCHY_LOG_LEVEL",
 		envNATSCredentialsFile, envNATSToken, envNATSUsername, envNATSPassword,
 		envConnectTimeout, envStartupTimeout, envReconnectWait, envReconnectJitter, envDrainTimeout,
-		envAgentStateFile, envAgentEnrollmentToken, envAgentVersion, envRegisterSubject, envLeaseRenewSubject, envRequestTimeout, envEventBufferSize,
+		envAgentStateFile, envAgentEnrollmentToken, envAgentVersion, envRegisterSubject, envLeaseRenewSubject, envRequestTimeout, envEventBufferSize, envJetStreamStream, envEventNakDelay,
 		envOperationWorkers, envOperationQueueSize, envOperationTimeout, envOperationInputLimit, envOperationOutputLimit, envResultPublishTimeout, envExecutionEnabled, envExecutionShellPath,
+		envServiceManagementEnabled, envServiceControlEnabled, envServiceAllowlist, envSystemctlPath,
 	}
 	for _, key := range keys {
 		t.Setenv(key, "")
@@ -41,8 +45,14 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.EventBufferSize != defaultEventBufferSize {
 		t.Fatalf("EventBufferSize = %d, want %d", cfg.EventBufferSize, defaultEventBufferSize)
 	}
+	if cfg.JetStreamStream != agentv1.AgentEventsStreamName || cfg.EventNakDelay != 5*time.Second {
+		t.Fatalf("unexpected durable delivery defaults: stream=%q nak_delay=%s", cfg.JetStreamStream, cfg.EventNakDelay)
+	}
 	if cfg.CommandExecutionEnabled {
 		t.Fatal("command execution must be disabled by default")
+	}
+	if cfg.ServiceManagementEnabled || cfg.ServiceControlEnabled || len(cfg.AllowedServices) != 0 {
+		t.Fatal("service management must be disabled by default")
 	}
 	if cfg.ExecutionShellPath != "/bin/sh" {
 		t.Fatalf("ExecutionShellPath = %q", cfg.ExecutionShellPath)
@@ -67,6 +77,70 @@ func TestLoadConfigEnablesCommandExecutionOnlyWhenExplicitlyRequested(t *testing
 	}
 	if !cfg.CommandExecutionEnabled {
 		t.Fatal("CommandExecutionEnabled = false, want true")
+	}
+}
+
+func TestLoadConfigEnablesServiceManagementOnlyWithExplicitAllowlist(t *testing.T) {
+	clearAgentEnv(t)
+	t.Setenv(envAgentNATSURL, "nats://127.0.0.1:4222")
+	t.Setenv(envServiceManagementEnabled, "true")
+	t.Setenv(envServiceAllowlist, "nginx.service,ssh.service")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if !cfg.ServiceManagementEnabled || cfg.ServiceControlEnabled {
+		t.Fatalf("unexpected service management policy: enabled=%v control=%v", cfg.ServiceManagementEnabled, cfg.ServiceControlEnabled)
+	}
+	if got := strings.Join(cfg.AllowedServices, ","); got != "nginx.service,ssh.service" {
+		t.Fatalf("AllowedServices = %q", got)
+	}
+}
+
+func TestLoadConfigCanEnableServiceControlSeparately(t *testing.T) {
+	clearAgentEnv(t)
+	t.Setenv(envAgentNATSURL, "nats://127.0.0.1:4222")
+	t.Setenv(envServiceManagementEnabled, "true")
+	t.Setenv(envServiceControlEnabled, "true")
+	t.Setenv(envServiceAllowlist, "nginx.service")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if !cfg.ServiceManagementEnabled || !cfg.ServiceControlEnabled {
+		t.Fatal("service status and control should be enabled")
+	}
+}
+
+func TestConfigRejectsUnsafeServiceManagementPolicy(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{name: "control without management", mutate: func(c *Config) { c.ServiceControlEnabled = true }},
+		{name: "no allowlist", mutate: func(c *Config) { c.ServiceManagementEnabled = true }},
+		{name: "invalid unit", mutate: func(c *Config) { c.ServiceManagementEnabled = true; c.AllowedServices = []string{"../nginx.service"} }},
+		{name: "duplicate unit", mutate: func(c *Config) {
+			c.ServiceManagementEnabled = true
+			c.AllowedServices = []string{"nginx.service", "nginx.service"}
+		}},
+		{name: "relative systemctl", mutate: func(c *Config) {
+			c.ServiceManagementEnabled = true
+			c.AllowedServices = []string{"nginx.service"}
+			c.SystemctlPath = "systemctl"
+		}},
+		{name: "allowlist while disabled", mutate: func(c *Config) { c.AllowedServices = []string{"nginx.service"} }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := validTestConfig()
+			test.mutate(&cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("Validate() succeeded for unsafe service policy")
+			}
+		})
 	}
 }
 
@@ -175,6 +249,8 @@ func validTestConfig() Config {
 		DrainTimeout:            time.Second,
 		RequestTimeout:          time.Second,
 		EventBufferSize:         defaultEventBufferSize,
+		JetStreamStream:         agentv1.AgentEventsStreamName,
+		EventNakDelay:           5 * time.Second,
 		OperationWorkers:        defaultOperationWorkers,
 		OperationQueueSize:      defaultOperationQueue,
 		MaxOperationTimeout:     5 * time.Minute,
@@ -248,4 +324,21 @@ func TestConfigRejectsUnsafeOperationLimits(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestConfigRejectsInvalidJetStreamConfiguration(t *testing.T) {
+	t.Run("invalid stream name", func(t *testing.T) {
+		cfg := validTestConfig()
+		cfg.JetStreamStream = "MACHINARCHY.AGENT.EVENTS"
+		if err := cfg.Validate(); err == nil {
+			t.Fatal("Validate() succeeded; want invalid JetStream stream name error")
+		}
+	})
+	t.Run("invalid nak delay", func(t *testing.T) {
+		cfg := validTestConfig()
+		cfg.EventNakDelay = 0
+		if err := cfg.Validate(); err == nil {
+			t.Fatal("Validate() succeeded; want invalid event NAK delay error")
+		}
+	})
 }

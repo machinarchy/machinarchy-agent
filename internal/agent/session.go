@@ -8,6 +8,8 @@ import (
 	"os"
 	"runtime"
 	"time"
+
+	agentv1 "github.com/machinarchy/machinarchy-protocol/agent/v1"
 )
 
 // Session manages control-plane identity registration and lease heartbeats.
@@ -17,10 +19,11 @@ type Session interface {
 }
 
 type AgentSession struct {
-	config Config
-	logger *slog.Logger
-	store  IdentityStore
-	ledger EventLedger
+	config  Config
+	logger  *slog.Logger
+	store   IdentityStore
+	opStore OperationStore
+	ledger  EventLedger
 }
 
 func NewAgentSession(cfg Config, logger *slog.Logger, store IdentityStore) (*AgentSession, error) {
@@ -37,12 +40,21 @@ func NewAgentSession(cfg Config, logger *slog.Logger, store IdentityStore) (*Age
 	if err != nil {
 		return nil, fmt.Errorf("initialize agent event ledger: %w", err)
 	}
+	operationStorePath := cfg.OperationStoreFile
+	if operationStorePath == "" {
+		operationStorePath = cfg.IdentityFile + ".operations.json"
+	}
+	opStore, err := NewFileOperationStore(operationStorePath)
+	if err != nil {
+		return nil, fmt.Errorf("initialize durable operation store: %w", err)
+	}
 	sessionLogger := logger.With("component", "agent-session")
 	return &AgentSession{
-		config: cfg,
-		logger: sessionLogger,
-		store:  store,
-		ledger: ledger,
+		config:  cfg,
+		logger:  sessionLogger,
+		store:   store,
+		opStore: opStore,
+		ledger:  ledger,
 	}, nil
 }
 
@@ -80,7 +92,11 @@ func (s *AgentSession) Run(ctx context.Context, conn Connection, events <-chan C
 	if err != nil {
 		return fmt.Errorf("derive agent event subscription subject: %w", err)
 	}
-	subscription, err := subscriber.Subscribe(ctx, subject, s.config.EventBufferSize)
+	consumerName, err := agentv1.AgentEventsConsumerName(identity.AgentID)
+	if err != nil {
+		return fmt.Errorf("derive agent event durable consumer name: %w", err)
+	}
+	subscription, err := subscriber.Subscribe(ctx, subject, consumerName, s.config.EventBufferSize)
 	if err != nil {
 		return fmt.Errorf("subscribe to agent events: %w", err)
 	}
@@ -124,7 +140,7 @@ func (s *AgentSession) Run(ctx context.Context, conn Connection, events <-chan C
 	if err != nil {
 		return fmt.Errorf("initialize agent capability registry: %w", err)
 	}
-	dispatcher, err = NewOperationDispatcher(identity, registry, resultPublisher, s.config.OperationDispatcherConfig(), s.logger)
+	dispatcher, err = NewOperationDispatcherWithStore(identity, registry, resultPublisher, s.opStore, s.config.OperationDispatcherConfig(), s.logger)
 	if err != nil {
 		return fmt.Errorf("initialize operation dispatcher: %w", err)
 	}
@@ -138,22 +154,37 @@ func (s *AgentSession) Run(ctx context.Context, conn Connection, events <-chan C
 	s.logger.Info("subscribed to agent events", "agent_id", identity.AgentID, "subject", subject)
 
 	messageStream := subscription.Messages()
-	var pendingMessage []byte
-	processMessage := func(raw []byte) error {
-		if len(raw) == 0 {
+	var pendingMessage EventMessage
+	processMessage := func(message EventMessage) error {
+		if message == nil || len(message.Payload()) == 0 {
 			return nil
 		}
-		if eventErr := processor.Handle(ctx, raw); eventErr != nil {
-			if errors.Is(eventErr, ErrDuplicateAgentEvent) {
+		processingErr := processor.Handle(ctx, message.Payload())
+		ackCtx, ackCancel := context.WithTimeout(context.Background(), s.config.RequestTimeout)
+		defer ackCancel()
+		switch {
+		case processingErr == nil || errors.Is(processingErr, ErrDuplicateAgentEvent):
+			if errors.Is(processingErr, ErrDuplicateAgentEvent) {
 				s.logger.Debug("duplicate agent event ignored")
-				return nil
 			}
+			if ackErr := message.Ack(ackCtx); ackErr != nil {
+				// The local ledger makes redelivery safe. Leave the message pending
+				// when the broker cannot confirm the acknowledgement.
+				s.logger.Warn("could not confirm durable event acknowledgement; broker may redeliver", "error", ackErr)
+			}
+		case isInvalidAgentEvent(processingErr):
 			var invalidEvent *InvalidAgentEventError
-			if errors.As(eventErr, &invalidEvent) {
-				s.logger.Warn("rejected invalid agent event", "reason", invalidEvent.Error())
-				return nil
+			_ = errors.As(processingErr, &invalidEvent)
+			s.logger.Warn("terminating invalid agent event", "reason", invalidEvent.Error())
+			if termErr := message.Term(ackCtx); termErr != nil {
+				s.logger.Warn("could not terminate invalid durable event", "error", termErr)
 			}
-			return fmt.Errorf("process agent event: %w", eventErr)
+		default:
+			// Storage failures and transient handler errors must not be acknowledged.
+			// Delayed NAK avoids a hot redelivery loop while preserving the message.
+			if nakErr := message.Nak(ackCtx, s.config.EventNakDelay); nakErr != nil {
+				s.logger.Warn("could not negatively acknowledge durable event; broker will retry after AckWait", "error", nakErr)
+			}
 		}
 		return nil
 	}
@@ -164,10 +195,10 @@ func (s *AgentSession) Run(ctx context.Context, conn Connection, events <-chan C
 		if err := ensureLeaseAlive(identity); err != nil {
 			return err
 		}
-		if len(pendingMessage) > 0 {
-			raw := pendingMessage
+		if pendingMessage != nil {
+			message := pendingMessage
 			pendingMessage = nil
-			if err := processMessage(raw); err != nil {
+			if err := processMessage(message); err != nil {
 				return err
 			}
 		}
@@ -184,7 +215,7 @@ func (s *AgentSession) Run(ctx context.Context, conn Connection, events <-chan C
 		case <-ctx.Done():
 			s.logger.Info("agent session shutdown requested", "agent_id", identity.AgentID)
 			return nil
-		case raw, open := <-messageStream:
+		case message, open := <-messageStream:
 			if !open {
 				return errors.New("agent event subscription message stream closed")
 			}
@@ -192,11 +223,11 @@ func (s *AgentSession) Run(ctx context.Context, conn Connection, events <-chan C
 			// drops. Hold at most the message already selected by this loop and
 			// stop consuming until connectivity and the lease are re-established.
 			if !conn.IsConnected() {
-				pendingMessage = append(pendingMessage[:0], raw...)
+				pendingMessage = message
 				messageStream = nil
 				continue
 			}
-			if err := processMessage(raw); err != nil {
+			if err := processMessage(message); err != nil {
 				return err
 			}
 		case event, open := <-events:
@@ -463,6 +494,11 @@ func ensureLeaseAlive(identity AgentIdentity) error {
 		return fmt.Errorf("%w; agent must be re-enrolled or the control plane must restore its identity", ErrAgentLeaseExpired)
 	}
 	return nil
+}
+
+func isInvalidAgentEvent(err error) bool {
+	var invalidEvent *InvalidAgentEventError
+	return errors.As(err, &invalidEvent)
 }
 
 func isRetryable(err error) bool {

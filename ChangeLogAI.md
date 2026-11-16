@@ -54,3 +54,163 @@
   declares Go 1.26.0.
 - Real NATS/controller integration has not been performed; the isolated NATS
   stub is not an end-to-end integration test.
+
+
+## 2026-11-14 — Durable Agent operation lifecycle
+
+### Added
+
+- Added `internal/agent/operation_store.go`, a bounded private atomic snapshot
+  store for accepted operations, lifecycle transitions and pending results.
+- Persisted operation acceptance before queueing and the running transition
+  before invoking a capability.
+- Added crash recovery: accepted/unexpired work may resume; interrupted running
+  work becomes `unknown` and is never automatically replayed.
+- Added result retry until controller acknowledgement, compact deduplication
+  tombstones, storage bounds and backpressure.
+- Added protocol v2 `operation.result.acknowledged` and `unknown` status
+  contracts.
+
+### Changed
+
+- `AgentSession` now opens the durable operation store at the configured path
+  or defaults to `<identity-file>.operations.json`.
+- Updated lifecycle, execution, protocol compatibility and configuration
+  documentation.
+
+### Verification
+
+- Passed `scripts/verify-agent-isolated.sh`: unit tests, race tests, `go vet`,
+  and build using the bundled NATS API stub and local protocol checkout.
+- Added persistence/reload, result acknowledgement, duplicate operation ID,
+  accepted-operation recovery and unknown-after-crash tests.
+- Real NATS, JetStream and controller integration remain unverified. The
+  current Core NATS inbound subscription does not provide durable delivery.
+
+## 2026-11-14 — Durable Agent operation state (Phase 1)
+
+- Added a bounded, permission-protected local operation store with atomic snapshot replacement and restart recovery.
+- Persisted operation acceptance before execution and the `running` transition before invoking a capability.
+- Added a durable result outbox with retry-until-controller-acknowledgement semantics; acknowledged records retain compact request digests for deduplication.
+- Added protocol v2 result acknowledgements and the `unknown` terminal status for operations interrupted after execution may have started.
+- Added recovery, permission, deduplication and acknowledgement tests; updated configuration, security, lifecycle and compatibility documentation.
+- Added an operational rollout gate describing the controller changes, release order and required end-to-end failure scenarios.
+- Fixed bounded-capacity accounting after acknowledged `unknown` results, prevented late cancellation events from overwriting terminal results, and made shutdown wait for the result-outbox goroutine to exit. Added regression coverage for these paths.
+- Reduced sensitive data at rest by removing raw request/event payloads from the durable snapshot at the `running` transition while retaining a digest for duplicate detection; terminal result output remains until controller acknowledgement.
+- Verification: isolated Go 1.23-compatible harness with local NATS API stub passed unit tests, race detector, `go vet` and build. The repository declares Go 1.26; real NATS and controller end-to-end tests remain outstanding.
+- Rollout constraint: do not pair this Agent build with a protocol-v1 controller. The controller must durably persist results before acknowledging them and must support the protocol-v2 `unknown` status and result-ack event.
+
+
+## 2026-11-14 — Durable Agent command delivery (Phase 2 implementation slice)
+
+### Added
+
+- Replaced Agent inbound Core NATS event subscription with binding to a
+  controller-provisioned JetStream durable pull consumer.
+- Added explicit JetStream message acknowledgement after local durable event
+  handling, delayed NAK for transient errors, and terminal handling for
+  invalid-sized poison messages.
+- Added controller overlay code for bounded WorkQueue stream/per-Agent consumer
+  provisioning, stable-ID event publishing, a transactional-outbox adapter
+  contract, and persist-before-ack result processing.
+- Added tests for consumer scoping, acknowledgement behavior, stream policies,
+  controller outbox publication, result persistence ordering, and identity
+  validation.
+
+### Changed
+
+- Queue-full operation rejections are now committed to the Agent operation
+  store/result outbox before the inbound JetStream event is acknowledged.
+- Updated Agent transport, configuration, security, protocol and rollout docs
+  to distinguish Core NATS request/reply/results from JetStream command delivery.
+
+### Verification
+
+- Passed `scripts/verify-agent-isolated.sh`: unit tests, race detector,
+  `go vet`, and build using the bundled compile-time NATS API stub.
+- Passed `controller-overlay/scripts/verify-isolated.sh`: unit tests, race
+  detector, `go vet`, and build using the bundled compile-time NATS API stub.
+- Live NATS/JetStream integration and controller database integration have not
+  been run. The actual Machinarchy controller source checkout was not available;
+  the controller package is a drop-in integration overlay, not merged into the
+  controller repository.
+
+
+## 2026-11-14 — Host facts capability (Phase 3 initial slice)
+
+### Added
+
+- Added a read-only `system.facts` capability with a versioned and bounded JSON
+  response containing selected host identity, OS, kernel, architecture, CPU,
+  memory, uptime, root filesystem and Agent runtime facts.
+- Added Linux best-effort collection using `/etc/os-release`, `/proc/meminfo`,
+  `/proc/uptime` and `statfs`; non-Linux builds return portable baseline facts
+  and omit platform metrics until dedicated collectors exist.
+- Added tests for schema version, cancellation, strict input validation, bounded
+  JSON output and omission of sensitive fields.
+
+### Changed
+
+- Registered `system.facts` as a default read-only capability and included it
+  in `runtime.info` capability discovery.
+- Updated architecture and user-facing documentation.
+
+### Verification
+
+- Passed the isolated Agent test, race, vet, Linux build and Windows cross-compile
+  harness with the bundled compile-time NATS stub and local protocol checkout.
+  This is not a real NATS integration test and does not replace the declared
+  Go 1.26 CI run.
+
+
+## 2026-11-14 — Host facts shared contract and controller integration overlay (Phase 4 slice)
+
+### Added
+
+- Added `machinarchy-protocol/hostfacts/v1` with strict JSON decoding, schema versioning, size limits and field consistency validation.
+- Added controller host facts result processing, authoritative operation matching, idempotent snapshot-store contract and authenticated HTTP route adapters.
+- Added a result-processing hook that runs after generic result persistence and before Agent acknowledgement; a host-facts persistence failure therefore causes a safe retry.
+
+### Changed
+
+- Updated the quick-start, rollout and compatibility documentation to use protocol module v0.2.2.
+- Agent facts DTOs now alias the shared protocol types and collected facts are validated before serialization.
+- Bumped the Agent protocol-module dependency to v0.2.2. The Agent event envelope remains protocol v2.
+
+### Verification
+
+- Agent isolated harness passed shared facts contract tests, unit tests, race detector, `go vet`, Linux build and Windows cross-compilation using the compile-time NATS stub.
+- Controller overlay isolated harness passed shared facts contract tests, unit tests, race detector, `go vet` and build using the compile-time NATS stub.
+- No live JetStream/controller database integration was run. The backend archive available in the workspace is an older HTTP-polling controller and does not match the current NATS-based Agent/controller architecture; this remains a controller integration overlay.
+
+
+## 2026-11-14 — Phase 5 bounded service management
+
+### Added
+
+- Added shared `services/v1` request/response contracts for service status and
+  constrained lifecycle operations.
+- Added opt-in Linux/systemd `service.status` and `service.control` capabilities.
+- Added exact local `.service` allowlisting, a separate mutation opt-in, fixed
+  systemctl argument vectors, bounded status parsing and operation cancellation.
+- Added a minimal systemctl child environment so Agent broker credentials and
+  arbitrary process variables are not inherited.
+- Added configuration validation, documentation, rollout notes and tests for
+  allowlist enforcement, supported actions, output validation and cancellation.
+
+### Deliberately excluded
+
+- Windows SCM and macOS launchd providers.
+- `enable`, `disable`, `reload`, unit-file changes and generic service-manager
+  commands.
+- Desired-state reconciliation (`service.ensure`), health checks and restart
+  policy management.
+- Any Agent-side privilege escalation or broad privileged helper.
+
+### Verification
+
+- Isolated shared protocol and Agent unit tests, race detector, `go vet`, Linux
+  build and Windows cross-compilation passed with the bundled compile-time NATS
+  stub and Go 1.23 compatibility harness.
+- Real Go 1.26 CI, real NATS/JetStream, systemd/polkit permission behavior and
+  controller authorization/integration remain to be verified.

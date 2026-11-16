@@ -1,8 +1,11 @@
 # Protocol Compatibility
 
 The Agent imports the public `github.com/machinarchy/machinarchy-protocol`
-module. The current wire schema has `ProtocolVersion = 1` and is still
-provisional until controller/agent end-to-end tests are complete.
+module. This change introduces Agent protocol version 2. Version 2 adds the
+`unknown` operation result status and the
+`operation.result.acknowledged` event used to release durable result outbox
+entries. A version-1 controller must not be treated as compatible with this
+Agent build.
 
 ## Compatibility policy
 
@@ -31,5 +34,12 @@ Before deploying an Agent release:
 1. Verify the controller dependency resolves to the same protocol module version.
 2. Verify controller request/reply handlers serialize matching response DTOs.
 3. Verify controller publishes to the exact per-agent event subject.
-4. Verify result consumer validates agent identity and persists the result.
-5. Run full NATS end-to-end tests with production-equivalent ACLs.
+4. Verify the result consumer validates Agent identity and durably upserts by
+   `operation_id` before publishing `operation.result.acknowledged`.
+5. Verify controller state machines accept the `unknown` operation status and
+   never treat it as a safe automatic retry.
+6. Provision the JetStream command stream and one exact-subject durable pull
+   consumer per Agent. The Agent binds to, but does not create, broker resources.
+7. Publish controller outbox items with stable event IDs and only mark them
+   published after a valid JetStream publish acknowledgement.
+8. Run full NATS/JetStream end-to-end tests with production-equivalent ACLs.

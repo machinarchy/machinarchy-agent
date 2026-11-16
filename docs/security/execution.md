@@ -48,3 +48,16 @@ The default systemd deployment runs as an unprivileged `machagent` user and
 uses filesystem and kernel hardening. Enabling execution does not make commands
 administrative. Do not weaken the service sandbox or run the Agent as root
 without an explicit threat review and host-specific operational requirement.
+
+
+## Service management security
+
+`service.status` and `service.control` are separate opt-in capabilities. Both
+require a local exact-name `.service` allowlist; control also requires
+`MACHINARCHY_AGENT_SERVICE_CONTROL_ENABLED=true`. The initial adapter invokes
+systemd directly using fixed argument vectors and only supports `start`, `stop`
+and `restart`. It does not support arbitrary flags, `sudo`, `enable`, `disable`,
+or unit-file mutation. The service-manager child receives a fixed environment
+rather than inheriting Agent credentials. OS/systemd/polkit policy remains the
+final privilege boundary; the controller must still enforce authorization and
+auditing.
