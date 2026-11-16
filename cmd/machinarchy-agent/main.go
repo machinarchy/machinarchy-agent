@@ -30,7 +30,11 @@ func main() {
 
 func run() error {
 	showVersion := flag.Bool("version", false, "print version information and exit")
+	checkConfig := flag.Bool("check-config", false, "validate Agent configuration and exit")
 	flag.Parse()
+	if *showVersion && *checkConfig {
+		return fmt.Errorf("--version and --check-config cannot be used together")
+	}
 	if *showVersion {
 		fmt.Printf("machinarchy-agent %s (commit=%s build_time=%s)\n", Version, Commit, BuildTime)
 		return nil
@@ -39,6 +43,10 @@ func run() error {
 	cfg, err := agent.LoadConfig()
 	if err != nil {
 		return err
+	}
+	if *checkConfig {
+		fmt.Println("Machinarchy Agent configuration is valid.")
+		return nil
 	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{

@@ -58,3 +58,6 @@ jobs:
       - name: Build
         run: make build
 
+      - name: Deployment packaging checks
+        run: make deployment-check
+

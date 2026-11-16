@@ -209,13 +209,40 @@ after `go mod tidy` before publishing a release.
 
 ## Deployment
 
-The native Linux/systemd deployment is the current host-management path. The
-existing Docker image runs the Agent inside a container but does not yet provide
-verified host OS integration; keep service management disabled in Docker until
-that work is completed.
+The supported host-management deployment is currently the native Linux binary
+under systemd on AMD64 and ARM64. A versioned GitHub release archive includes
+the executable, unit file, environment template, installer, rollback helper and
+uninstaller.
 
-- [Docker](docs/deployment/docker.md)
-- [systemd](docs/deployment/systemd.md)
+For an example release tag and architecture:
+
+```bash
+VERSION=v0.1.0
+ARCH=amd64 # or arm64
+ASSET="machinarchy-agent_${VERSION}_linux_${ARCH}.tar.gz"
+BASE="https://github.com/machinarchy/machinarchy-agent/releases/download/${VERSION}"
+
+curl --fail --location --proto '=https' --tlsv1.2 --output "${ASSET}" "${BASE}/${ASSET}"
+curl --fail --location --proto '=https' --tlsv1.2 --output checksums.txt "${BASE}/checksums.txt"
+grep -F "  ${ASSET}" checksums.txt | sha256sum --check
+tar -xzf "${ASSET}"
+cd "machinarchy-agent_${VERSION}_linux_${ARCH}"
+sudo ./install-systemd.sh
+```
+
+Configure `/etc/machinarchy-agent/agent.env`, then validate it with
+`machinarchy-agent --check-config` through `systemd-run` before enabling the
+service. See
+[Native Linux binary deployment](docs/deployment/systemd.md) for upgrades,
+rollback, uninstall and security details.
+
+The existing Docker image runs the Agent inside a container but does not yet
+provide verified host OS integration. Do not use it to manage host services;
+Docker host integration is a separate planned phase.
+
+- [Native Linux binary / systemd](docs/deployment/systemd.md)
+- [Phase 2 implementation and verification record](docs/operations/phase2-native-binary-deployment.md)
+- [Docker image limitations](docs/deployment/docker.md)
 - [Operations and troubleshooting](docs/operations/troubleshooting.md)
 
 ## Security

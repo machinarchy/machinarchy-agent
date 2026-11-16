@@ -5,6 +5,16 @@ notes and file-level details belong in `ChangeLogAI.md`.
 
 ## Unreleased
 
+- Added versioned Linux AMD64/ARM64 release archives containing the Agent
+  binary, systemd unit, environment template and installation lifecycle tools.
+- Added atomic native installation and upgrade, one-step binary/unit rollback,
+  and non-destructive uninstall with an explicit destructive purge option.
+- Fixed system account allocation to avoid hard-coded UID/GID collisions and
+  corrected configuration-directory group traversal for the unprivileged Agent.
+- Added release archive/checksum smoke tests and CI deployment packaging checks.
+- Added `machinarchy-agent --check-config` for validating the production
+  environment without connecting to NATS or starting the runtime.
+
 - Added opt-in Linux/systemd `service.status` and `service.control` Agent
   capabilities with exact local unit allowlisting and separate control opt-in.
 - Added bounded systemd status parsing, fixed-argv lifecycle actions, context

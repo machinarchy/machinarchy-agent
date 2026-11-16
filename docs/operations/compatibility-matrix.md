@@ -13,9 +13,17 @@ integration suite against the tagged releases and the actual NATS ACL model.
 
 ## Platform support
 
-Linux is the initial production target. Windows may build, but it is not
-production-approved until the durable-store atomic replacement/directory-sync
-behavior and process-tree cancellation are covered by native Windows tests.
+| OS | Architecture | Deployment | Status |
+|---|---|---|---|
+| Linux with systemd | AMD64 | Native binary | Release packaging target; live integration still required |
+| Linux with systemd | ARM64 | Native binary | Release packaging target; live integration still required |
+| Linux without systemd | AMD64/ARM64 | Native binary | Not supported by the systemd installer |
+| Docker Engine | AMD64 | Container | Agent runtime only; host OS management is not supported yet |
+| Windows/macOS | Any | Native binary | Not production-supported |
+
+Windows may build, but it is not production-approved until the durable-store
+atomic replacement/directory-sync behavior and process-tree cancellation are
+covered by native Windows tests.
 
 
 The Agent's initial service backend supports Linux/systemd only. Read-only status

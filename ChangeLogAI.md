@@ -272,3 +272,58 @@
   temporary Go 1.23 harness and compile-time NATS stub. Real Go 1.26 CI, actual
   NATS v1.55.0, live JetStream, systemd/Polkit and controller end-to-end tests
   remain outstanding.
+
+
+## 2026-11-14 — Phase 2 native Linux binary deployment
+
+### Added
+
+- Added versioned Linux AMD64/ARM64 release archive packaging with the Agent
+  binary, systemd unit, production environment template, install/uninstall/
+  rollback scripts, install guide and build metadata.
+- Added release packaging smoke tests and a `make deployment-check` target.
+- Added `machinarchy-agent --check-config` and documented validation through a
+  transient systemd unit using the same EnvironmentFile and Agent UID/GID.
+- Added one-step rollback support that swaps current and previous binary/unit
+  copies while preserving Agent identity and operation state.
+- Added explicit non-destructive uninstall and separately confirmed purge mode.
+
+### Changed
+
+- Reworked systemd installation to use dynamically allocated system account IDs
+  rather than fixed UID/GID values, verify the system manager is reachable,
+  preserve existing config/state, atomically replace binaries and units, and
+  restart only a service that was already active. Uninstall refuses to remove
+  the binary if an active service cannot be stopped cleanly.
+- Corrected `/etc/machinarchy-agent` ownership to `root:machagent` mode `0750`,
+  allowing the unprivileged Agent to read its configured credentials while
+  keeping configuration management restricted to root.
+- Updated release CI to run tests/race/vet and deployment packaging checks, then
+  publish versioned archives and checksums instead of loose architecture-named
+  binaries.
+- Updated native installation, release, rollback, compatibility and README
+  documentation. Docker host management remains explicitly unsupported in this
+  phase.
+
+### Files changed
+
+- `.github/workflows/release.yml`, `Makefile`, `README.md`, `CHANGELOG.md`,
+  `docs/deployment/systemd.md`, `docs/operations/release-process.md`,
+  `docs/operations/rollback.md`, `docs/operations/compatibility-matrix.md`,
+  new `docs/operations/phase2-native-binary-deployment.md`, `ChangeLogAI.md`.
+- `cmd/machinarchy-agent/main.go`, `deployments/systemd/machinarchy-agent.service`
+  and new `deployments/systemd/agent.env.example`.
+- `scripts/install-systemd.sh`, new `scripts/uninstall-systemd.sh`,
+  `scripts/rollback-systemd.sh`, `scripts/package-release.sh`,
+  `scripts/test-release-package.sh`, `scripts/verify-systemd-unit.sh`, and the
+  isolated verification harness `scripts/verify-agent-isolated.sh`.
+
+### Verification
+
+- Shell syntax checks, release archive packaging smoke tests, SHA-256 validation
+  and systemd unit verification are run via `make deployment-check`.
+- Full Go 1.26 build/test/race/vet and release workflow have not been run in this
+  environment because the Go 1.26 toolchain is unavailable and network access to
+  the Go toolchain proxy is blocked. Real installation/upgrade/rollback against
+  a systemd VM still needs to be exercised before declaring deployment
+  production-ready.

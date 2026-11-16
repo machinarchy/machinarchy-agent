@@ -54,6 +54,15 @@ printf '%s\n' '== go vet =='
 go vet ./...
 printf '%s\n' '== build =='
 go build -o "${WORK_DIR}/machinarchy-agent" ./cmd/machinarchy-agent
+printf '%s\n' '== CLI metadata and configuration validation =='
+"${WORK_DIR}/machinarchy-agent" --version
+MACHINARCHY_AGENT_NATS_URL=nats://127.0.0.1:4222 \
+  MACHINARCHY_AGENT_STATE_FILE="${WORK_DIR}/identity.json" \
+  "${WORK_DIR}/machinarchy-agent" --check-config
+if "${WORK_DIR}/machinarchy-agent" --version --check-config >/dev/null 2>&1; then
+  echo "--version and --check-config should not be accepted together" >&2
+  exit 1
+fi
 printf '%s\n' '== Windows cross-compile =='
 GOOS=windows GOARCH=amd64 go test -c -o "${WORK_DIR}/agent-windows.test.exe" ./internal/agent
 printf '%s\n' 'Isolated verification completed. This does not replace testing against the real NATS module or a live controller.'

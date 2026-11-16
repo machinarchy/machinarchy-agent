@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build release binaries
+    name: Build and package Linux releases
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout exact release commit
@@ -41,6 +41,18 @@ jobs:
             git config --global url."https://x-access-token:${MODULE_TOKEN}@github.com/".insteadOf "https://github.com/"
           fi
 
+      - name: Download modules
+        run: go mod download
+
+      - name: Verify source and deployment packaging
+        run: |
+          set -euo pipefail
+          make fmt-check
+          go test -count=1 ./...
+          go test -race -count=1 ./...
+          go vet ./...
+          make deployment-check
+
       - name: Build Linux binaries
         env:
           RELEASE_TAG: ${{ github.ref_name }}
@@ -57,25 +69,24 @@ jobs:
               go build -trimpath -ldflags="${LDFLAGS}" \
               -o "dist/machinarchy-agent-linux-${ARCH}" ./cmd/machinarchy-agent
           done
+          echo "BUILD_TIME=${BUILD_TIME}" >> "${GITHUB_ENV}"
 
-      - name: Package and checksum
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd dist
-          for BINARY in machinarchy-agent-linux-*; do
-            tar -czf "${BINARY}.tar.gz" "${BINARY}"
-          done
-          sha256sum machinarchy-agent-linux-* > checksums.txt
+      - name: Create versioned release archives
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: ./scripts/package-release.sh "${RELEASE_TAG}" "${RELEASE_SHA}" "${BUILD_TIME}" dist
 
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
+        shell: bash
         run: |
           set -euo pipefail
+          ASSETS=(dist/machinarchy-agent_"${TAG}"_linux_amd64.tar.gz dist/machinarchy-agent_"${TAG}"_linux_arm64.tar.gz dist/checksums.txt)
           if gh release view "${TAG}" >/dev/null 2>&1; then
-            gh release upload "${TAG}" dist/* --clobber
+            gh release upload "${TAG}" "${ASSETS[@]}" --clobber
           else
-            gh release create "${TAG}" dist/* --generate-notes --verify-tag
+            gh release create "${TAG}" "${ASSETS[@]}" --generate-notes --verify-tag
           fi

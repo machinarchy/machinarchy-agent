@@ -3,6 +3,8 @@ Description=Machinarchy Agent
 Documentation=https://github.com/machinarchy/machinarchy-agent
 Wants=network-online.target
 After=network-online.target
+StartLimitIntervalSec=5min
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -11,12 +13,14 @@ Group=machagent
 ExecStart=/usr/local/bin/machinarchy-agent
 Restart=on-failure
 RestartSec=5s
-TimeoutStopSec=20s
+TimeoutStopSec=25s
 KillSignal=SIGTERM
 
 EnvironmentFile=-/etc/machinarchy-agent/agent.env
 Environment=MACHINARCHY_ENVIRONMENT=production
 Environment=MACHINARCHY_AGENT_STATE_FILE=/var/lib/machinarchy-agent/identity.json
+Environment=HOME=/var/lib/machinarchy-agent
+WorkingDirectory=/var/lib/machinarchy-agent
 
 StateDirectory=machinarchy-agent
 StateDirectoryMode=0700
@@ -33,6 +37,9 @@ RestrictSUIDSGID=true
 RestrictRealtime=true
 CapabilityBoundingSet=
 AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/machinarchy-agent
 
 [Install]
 WantedBy=multi-user.target

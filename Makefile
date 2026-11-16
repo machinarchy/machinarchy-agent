@@ -7,7 +7,7 @@ COMMIT ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
 BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -s -w -X main.Version=$(VERSION) -X main.Commit=$(COMMIT) -X main.BuildTime=$(BUILD_TIME)
 
-.PHONY: help fmt fmt-check test test-race vet build run check verify-isolated clean docker-build
+.PHONY: help fmt fmt-check test test-race vet build run check verify-isolated deployment-check clean docker-build
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*##"}; /^[a-zA-Z0-9_-]+:.*##/ {printf "%-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -35,10 +35,15 @@ build: ## Build the agent binary
 run: ## Run the agent with environment inherited from the shell
 	$(GO) run ./cmd/machinarchy-agent
 
-check: fmt-check test test-race vet build ## Run all local quality checks
+check: fmt-check test test-race vet build deployment-check ## Run all local quality checks
 
 verify-isolated: ## Verify agent source using the isolated NATS API stub harness
 	./scripts/verify-agent-isolated.sh
+
+deployment-check: ## Validate deployment scripts and release archive packaging
+	@for script in scripts/install-systemd.sh scripts/uninstall-systemd.sh scripts/rollback-systemd.sh scripts/package-release.sh scripts/test-release-package.sh scripts/verify-systemd-unit.sh; do bash -n "$$script"; done
+	./scripts/test-release-package.sh
+	./scripts/verify-systemd-unit.sh
 
 docker-build: ## Build local container image
 	docker build --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) -t machinarchy-agent:$(VERSION) .
