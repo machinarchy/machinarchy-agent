@@ -5,7 +5,11 @@
 2. Run CI, race tests, vet, deployment packaging checks, real NATS integration
    and controller/agent end-to-end tests.
 3. Review `CHANGELOG.md`, `ChangeLogAI.md` and the compatibility matrix.
-4. Create and push a signed annotated tag (`vX.Y.Z`).
+4. Create and push a signed annotated stable tag (`vX.Y.Z`). Release-candidate
+   tags may use a SemVer prerelease suffix such as `vX.Y.Z-rc.1`; the release
+   workflow validates the tag and marks those GitHub releases as prereleases.
+   Prerelease images keep their versioned tag and must not move the Docker
+   `latest` tag.
 5. The release workflow builds Linux AMD64 and ARM64 binaries with release
    metadata, packages each with its systemd unit, environment template,
    installer, rollback and uninstall helpers, and publishes SHA-256 checksums.
@@ -16,6 +20,7 @@
    controller before wider rollout.
 
 The current Docker image workflow is separate from native binary releases.
-Publishing a container image does not make host OS management through Docker a
-supported deployment; host integration remains a separate implementation and
-verification phase.
+It publishes versioned AMD64/ARM64 images; only stable SemVer tags update the
+`latest` image tag. Main-branch builds use their commit-derived tag. Publishing
+a container image does not make optional host systemd integration production-
+supported; live D-Bus/Polkit validation remains a separate release gate.

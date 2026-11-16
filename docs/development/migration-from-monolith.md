@@ -7,13 +7,18 @@ protocol dependencies and authority boundaries must be updated.
 ## Move to `machinarchy-agent`
 
 - `cmd/agent` -> `cmd/machinarchy-agent`
-- `internal/agent/**` -> `internal/agent/**`
-- Agent-specific runtime/session/identity/event/dispatcher tests
-- Agent documentation and agent deployment files
+- Agent-owned code from the former monolith `internal/agent/**` into the
+  standalone repository's responsibility-based packages:
+  `internal/app`, `internal/config`, `internal/controlplane`,
+  `internal/transport`, `internal/transport/nats`, `internal/identity`,
+  `internal/events`,
+  `internal/operations`, and `internal/capabilities`
+- Agent-specific tests alongside the package they verify
+- Agent documentation and deployment files
 - Agent binary build/release steps
 
-Update imports from the old monolith module path to
-`github.com/machinarchy/machinarchy-agent/internal/agent`, and replace the old
+Imports must target the owning package in this repository; there is no
+replacement catch-all `internal/agent` import path. Replace the monolith's
 internal event contract import with
 `github.com/machinarchy/machinarchy-protocol/agent/v1`.
 

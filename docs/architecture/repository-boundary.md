@@ -32,10 +32,17 @@ do not need to share a NATS client wrapper. The protocol module must not depend
 on a NATS client, database, Echo, SSH library, or either application's internal
 code.
 
-## Moving the code from the monolith
+## Current Agent package ownership
 
-Move agent-owned code from `cmd/agent` and `internal/agent` into this
-repository. Do not move controller-only `internal/agentcontrol` handlers,
+The extraction from the monolith is complete. The standalone Agent keeps its
+implementation divided by responsibility: `internal/app`, `internal/config`,
+`internal/controlplane`, `internal/transport`, `internal/transport/nats`,
+`internal/identity`, `internal/events`, `internal/operations`, and
+`internal/capabilities`.
+`cmd/machinarchy-agent` is only the composition root. Do not reintroduce a
+catch-all `internal/agent` package.
+
+Do not move controller-only `internal/agentcontrol` handlers,
 service/repository implementations, migrations, or outbox adapters into the
-agent repository. Those belong in the controller repository and should import
+Agent repository. Those remain in the controller repository and should import
 the shared protocol module.

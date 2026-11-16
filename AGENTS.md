@@ -23,7 +23,13 @@ transport; that does not authorize registering those capabilities in this Agent.
 
 ## Engineering requirements
 
-- Keep `cmd/machinarchy-agent` thin; lifecycle logic belongs under `internal/agent`.
+- Keep `cmd/machinarchy-agent` as the composition root only. Runtime/session
+  orchestration belongs in `internal/app`; transport contracts belong in
+  `internal/transport`, with the NATS adapter in `internal/transport/nats`.
+  Configuration, control-plane logic, identity persistence, event processing,
+  operation dispatch/persistence, and OS capabilities belong in their
+  corresponding cohesive `internal/` packages.
+- Do not recreate a catch-all `internal/agent` package. Keep package boundaries small and responsibility-based, and avoid dependency cycles.
 - Treat all broker input as untrusted.
 - Never implement unrestricted remote shell execution as a default capability.
 - Every capability must be explicitly registered, validated, bounded, and cancellable.

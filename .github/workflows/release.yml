@@ -23,12 +23,25 @@ jobs:
           ref: ${{ github.ref }}
           persist-credentials: false
 
+      - name: Validate release tag
+        env:
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?(\+[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "Release tag must be a version like v1.2.3, optionally with prerelease/build metadata." >&2
+            exit 1
+          fi
+
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
-          cache-dependency-path: go.mod
+          cache-dependency-path: |
+            go.mod
+            go.sum
 
       - name: Configure optional private protocol module access
         env:
@@ -85,8 +98,17 @@ jobs:
         run: |
           set -euo pipefail
           ASSETS=(dist/machinarchy-agent_"${TAG}"_linux_amd64.tar.gz dist/machinarchy-agent_"${TAG}"_linux_arm64.tar.gz dist/checksums.txt)
+          RELEASE_ARGS=(--generate-notes --verify-tag)
+          IS_PRERELEASE=false
+          if [[ "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+- ]]; then
+            RELEASE_ARGS+=(--prerelease)
+            IS_PRERELEASE=true
+          fi
           if gh release view "${TAG}" >/dev/null 2>&1; then
             gh release upload "${TAG}" "${ASSETS[@]}" --clobber
+            if [[ "${IS_PRERELEASE}" == "true" ]]; then
+              gh release edit "${TAG}" --prerelease
+            fi
           else
-            gh release create "${TAG}" "${ASSETS[@]}" --generate-notes --verify-tag
+            gh release create "${TAG}" "${ASSETS[@]}" "${RELEASE_ARGS[@]}"
           fi

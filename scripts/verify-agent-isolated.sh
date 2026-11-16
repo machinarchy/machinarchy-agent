@@ -9,7 +9,7 @@ trap 'rm -rf "${WORK_DIR}"' EXIT
 mkdir -p "${WORK_DIR}/agent/cmd" "${WORK_DIR}/agent/internal" \
   "${WORK_DIR}/protocol/agent" "${WORK_DIR}/protocol/execution" "${WORK_DIR}/protocol/hostfacts" "${WORK_DIR}/protocol/services" "${WORK_DIR}/testdeps/nats.go"
 cp -R "${ROOT_DIR}/cmd/machinarchy-agent" "${WORK_DIR}/agent/cmd/"
-cp -R "${ROOT_DIR}/internal/agent" "${WORK_DIR}/agent/internal/"
+cp -R "${ROOT_DIR}/internal/." "${WORK_DIR}/agent/internal/"
 if [[ -z "${PROTOCOL_DIR}" || ! -d "${PROTOCOL_DIR}/agent/v1" ]]; then
   echo "machinarchy-protocol checkout not found; set PROTOCOL_DIR to its repository path." >&2
   exit 1
@@ -64,5 +64,5 @@ if "${WORK_DIR}/machinarchy-agent" --version --check-config >/dev/null 2>&1; the
   exit 1
 fi
 printf '%s\n' '== Windows cross-compile =='
-GOOS=windows GOARCH=amd64 go test -c -o "${WORK_DIR}/agent-windows.test.exe" ./internal/agent
+GOOS=windows GOARCH=amd64 go build ./...
 printf '%s\n' 'Isolated verification completed. This does not replace testing against the real NATS module or a live controller.'

@@ -58,9 +58,12 @@ On restart:
   larger than the configured queue capacity, startup fails with an actionable
   error rather than deadlocking or silently dropping accepted work. Restore or
   increase `MACHINARCHY_AGENT_OPERATION_QUEUE_SIZE`; do not delete the store.
-- `running` or `cancel_requested` operations become `unknown`. They are never
-  automatically re-executed because an external side effect may already have
-  happened.
+- `running` operations become `unknown`. A `cancel_requested` operation with
+  no persisted `started_at` becomes `cancelled`, because the Agent records the
+  running transition before invoking a capability. A cancellation after
+  `started_at` remains `unknown`, because an external side effect may already
+  have happened. Neither `running` nor started cancellation records are
+  automatically re-executed.
 - terminal results remain in the local outbox and are republished until the
   controller acknowledges durable persistence.
 - acknowledged operation IDs remain as compact deduplication tombstones until

@@ -1,5 +1,112 @@
 # AI Change Log
 
+## 2026-11-16 — Split the Agent catch-all package by responsibility
+
+### Changed
+
+- Replaced the oversized `internal/agent` package with cohesive packages:
+  `app`, `config`, `controlplane`, `transport`, `transport/nats`, `identity`,
+  `events`, `operations`, and `capabilities`.
+- Kept `cmd/machinarchy-agent` as the composition root; the neutral
+  `internal/transport` package owns connection/lifecycle contracts, implemented
+  by the NATS adapter without importing `internal/app`.
+- Moved tests beside their owning package and replaced formerly shared test
+  helpers with package-local fixtures where necessary.
+- Exported only the small internal-module helpers required across package
+  boundaries (configuration limits/path/subject validation, event bounds and
+  identifiers, identity lease/request helpers, and capability registry API).
+- Updated repository instructions, architecture/package maps, migration
+  guidance, Docker static checks and the isolated verification harness.
+
+### Files changed
+
+- `cmd/machinarchy-agent/main.go`, `internal/**`, `AGENTS.md`,
+  `docs/architecture/overview.md`, `docs/architecture/repository-boundary.md`,
+  `docs/development/migration-from-monolith.md`,
+  `internal/transport/transport.go`, `scripts/test-docker-deployment.sh`,
+  `scripts/verify-agent-isolated.sh`, `ChangeLogAI.md`.
+
+### Verification
+
+- Passed `make fmt-check`.
+- Passed `make deployment-check` (release packaging/checksum smoke tests,
+  systemd unit verification, and Docker deployment static checks).
+- Manually inspected the internal import graph; no package cycles or unresolved
+  internal package imports were found.
+- `go test ./...` is blocked before compilation: the available local toolchain
+  is Go 1.23.2 while `go.mod` requires Go 1.26.0. The isolated verification
+  harness is additionally blocked because the companion
+  `machinarchy-protocol` checkout is not included in the supplied archive.
+- `go vet` and production build were not validated for the same toolchain and
+  dependency availability reasons.
+
+
+## 2026-11-16 — Agent reliability and release workflow corrections
+
+### Fixed
+
+- Serialized the dispatcher's durable cancellation, running and completion
+  transitions so cancellation cannot interleave between the in-memory
+  acceptance check and the persisted running state.
+- Recovered pre-execution cancellations as `cancelled` rather than `unknown`,
+  while preserving `unknown` for cancellations after execution began.
+- Repaired cancellation tombstones that were persisted without a completed
+  result, both during startup recovery and event redelivery.
+- Preserved acknowledged cancellation results when duplicate operation events
+  are redelivered, preventing an acknowledged result from being recreated.
+- Rejected operation-store paths that collide with the identity event ledger,
+  including paths equivalent after home expansion and lexical normalization.
+- Propagated identity-directory open/sync errors instead of reporting a
+  successful save when the directory entry was not confirmed durable.
+- Restricted Docker `latest` updates to stable SemVer tags; prerelease tags
+  remain version-specific. Validated native release tags and mark SemVer
+  prereleases as GitHub prereleases.
+- Included both `go.mod` and `go.sum` in GitHub Actions module cache keys.
+- Removed stale transport comments that referred to a controller-side broker
+  package not present in this standalone Agent repository.
+
+### Files changed
+
+- `.github/workflows/ci.yml`, `.github/workflows/docker.yml`,
+  `.github/workflows/release.yml`.
+- `internal/agent/config.go`, `config_test.go`, `dispatcher.go`,
+  `dispatcher_test.go`, `event_ledger.go`, `identity.go`, `nats.go`,
+  `operation_store.go`, `operation_store_test.go`, `runtime.go`, `session.go`.
+- `docs/architecture/lifecycle.md`, `docs/architecture/operational-runtime.md`,
+  `docs/operations/compatibility-matrix.md`,
+  `docs/operations/release-process.md`, `ChangeLogAI.md`.
+
+### Documentation
+
+- Clarified the current Agent scope in the compatibility matrix and the
+  broader operational architecture decision table.
+- Documented stable versus prerelease tagging in the release process and
+  distinguished pre-execution cancellation recovery from uncertain started work.
+- Corrected the startup lease-renewal comment to match the explicit expired-lease
+  re-enrollment policy.
+
+### Tests added
+
+- Operation-store/event-ledger path collision validation.
+- Cancellation serialization against the durable running transition.
+- Recovery of pre-execution cancellation requests and incomplete cancellation
+  tombstones.
+- Suppression of duplicate cancellation-result publication after acknowledgement.
+
+### Verification
+
+- Passed `make fmt-check`.
+- Passed `make deployment-check` (release archive packaging and SHA-256 checks,
+  systemd unit verification, and Docker deployment static checks).
+- Go tests, race detection, `go vet`, and production builds are blocked because
+  the available local toolchain is Go 1.23.2 while `go.mod` requires Go 1.26.0;
+  toolchain download is unavailable in this environment.
+- The isolated verification harness is blocked because the companion
+  `machinarchy-protocol` checkout is not included in the supplied Agent archive.
+- Live NATS/JetStream/controller integration and live Docker/D-Bus/Polkit
+  integration were not run.
+
+
 ## 2026-11-14 — Initial repository extraction baseline
 
 ### Added

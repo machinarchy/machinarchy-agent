@@ -11,7 +11,10 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/machinarchy/machinarchy-agent/internal/agent"
+	"github.com/machinarchy/machinarchy-agent/internal/app"
+	"github.com/machinarchy/machinarchy-agent/internal/config"
+	"github.com/machinarchy/machinarchy-agent/internal/identity"
+	natsadapter "github.com/machinarchy/machinarchy-agent/internal/transport/nats"
 )
 
 // Release metadata is populated by release builds through -ldflags.
@@ -40,7 +43,7 @@ func run() error {
 		return nil
 	}
 
-	cfg, err := agent.LoadConfig()
+	cfg, err := config.LoadConfig()
 	if err != nil {
 		return err
 	}
@@ -60,15 +63,15 @@ func run() error {
 	if strings.TrimSpace(os.Getenv("MACHINARCHY_AGENT_VERSION")) == "" && Version != "" {
 		cfg.AgentVersion = Version
 	}
-	identityStore, err := agent.NewFileIdentityStore(cfg.IdentityFile)
+	identityStore, err := identity.NewFileIdentityStore(cfg.IdentityFile)
 	if err != nil {
 		return err
 	}
-	session, err := agent.NewAgentSession(cfg, logger, identityStore)
+	session, err := app.NewAgentSession(cfg, logger, identityStore)
 	if err != nil {
 		return err
 	}
-	runtime, err := agent.NewRuntime(cfg, logger, agent.NewNATSConnector(logger), session)
+	runtime, err := app.NewRuntime(cfg, logger, natsadapter.NewNATSConnector(logger), session)
 	if err != nil {
 		return err
 	}

@@ -776,7 +776,7 @@ The following decisions have been accepted as the starting direction; revisit th
 |---|---|
 | Agent role | Local operational runtime; controller remains fleet authority |
 | Production OS scope | Linux first, explicit tested support matrix |
-| Execution foundation | Typed capabilities first; shell as explicit escape hatch |
+| Execution foundation | Typed OS capabilities in the Agent; controller SSH remains a separate executor |
 | Arbitrary shell privilege | Agent service identity by default; never implicit root |
 | Privileged actions | Narrow local privileged helper, not a generic root shell |
 | Durable operation state | Bounded private atomic snapshot behind `OperationStore`; add SQLite only when measurements justify it |

@@ -32,6 +32,29 @@ source of authoritative identity.
    `service.control` capabilities for exact, locally allowlisted Linux/systemd
    units. Lifecycle actions require a separate local opt-in.
 
+## Go package map
+
+The standalone Agent repository keeps implementation responsibilities in
+separate packages rather than a catch-all `internal/agent` package:
+
+| Package | Responsibility |
+| --- | --- |
+| `cmd/machinarchy-agent` | Process bootstrap and dependency composition only |
+| `internal/app` | Runtime lifecycle and Agent session orchestration |
+| `internal/config` | Configuration loading, defaults and validation |
+| `internal/controlplane` | Registration and lease request/reply contracts and client |
+| `internal/transport` | Narrow connection, connector and lifecycle-event contracts |
+| `internal/transport/nats` | NATS connection, JetStream subscription and publishing adapter |
+| `internal/identity` | Agent identity model and local credential persistence |
+| `internal/events` | Event validation, deduplication and event-ledger persistence |
+| `internal/operations` | Bounded operation dispatch, cancellation and durable operation state |
+| `internal/capabilities` | Explicitly registered OS-management capabilities and platform adapters |
+
+`internal/app` consumes the narrow contracts in `internal/transport`; the
+concrete NATS adapter implements those contracts without importing the app
+package. The command entry point wires the adapter into the runtime. Tests live
+beside the package whose behavior they verify.
+
 ## Authority boundaries
 
 The controller is authoritative for enrollment, agent ID, host association,
