@@ -1,40 +1,28 @@
 package capabilities
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
+	"io"
+	"math"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
-	factsv1 "github.com/machinarchy/machinarchy-protocol/hostfacts/v1"
+	"github.com/machinarchy/machinarchy-agent/protocol/agentv1"
 )
 
-const maxFactsOutputBytes = factsv1.MaxFactsPayloadBytes
+const (
+	maxFactsBytes      = 16 << 10
+	maxProcFileBytes   = 64 << 10
+	containerOSRelease = "/run/machinarchy-host/os-release"
+)
 
-// The facts DTOs are aliases to the shared protocol contract so Agent output
-// and Controller ingestion cannot silently drift apart.
-type SystemFacts = factsv1.SystemFacts
-type OperatingSystem = factsv1.OperatingSystem
-type CPUFacts = factsv1.CPUFacts
-type MemoryFacts = factsv1.MemoryFacts
-type FilesystemFacts = factsv1.FilesystemFacts
-type AgentRuntimeFacts = factsv1.AgentRuntimeFacts
-
-// SystemFactsCapability returns a read-only snapshot of selected host facts.
-// Platform-specific collection is best-effort: unavailable metrics are omitted
-// rather than making the entire capability fail.
-func SystemFactsCapability(agentVersion string) Capability {
-	return CapabilityFunc(func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
-		if ctx == nil {
-			return nil, errors.New("system facts context is required")
-		}
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
+func systemFacts(agentVersion string) Capability {
+	return Func(func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
 		if err := requireEmptyObject(input); err != nil {
 			return nil, err
 		}
@@ -42,70 +30,119 @@ func SystemFactsCapability(agentVersion string) Capability {
 		if err != nil {
 			return nil, err
 		}
-		encoded, err := json.Marshal(facts)
-		if err != nil {
-			return nil, fmt.Errorf("encode system facts: %w", err)
-		}
-		if len(encoded) > maxFactsOutputBytes {
-			return nil, errors.New("system facts output exceeds the maximum size")
-		}
-		return encoded, nil
+		return json.Marshal(facts)
 	})
 }
 
-// CollectSystemFacts collects only explicitly selected, low-sensitivity facts.
-// The caller supplies the timestamp to make tests deterministic.
-func CollectSystemFacts(ctx context.Context, agentVersion string, collectedAt time.Time) (SystemFacts, error) {
-	if ctx == nil {
-		return SystemFacts{}, errors.New("system facts context is required")
-	}
+// CollectSystemFacts gathers a small, non-sensitive description of the host.
+// Values the platform cannot report are omitted rather than guessed.
+func CollectSystemFacts(ctx context.Context, agentVersion string, now time.Time) (agentv1.SystemFacts, error) {
 	if err := ctx.Err(); err != nil {
-		return SystemFacts{}, err
+		return agentv1.SystemFacts{}, err
 	}
 	hostname, _ := os.Hostname()
-	facts := SystemFacts{
-		SchemaVersion: factsv1.SchemaVersion,
-		CollectedAt:   collectedAt.UTC(),
-		Hostname:      sanitizeFact(hostname, 255),
-		OS: OperatingSystem{
-			Platform: runtime.GOOS,
-		},
+	facts := agentv1.SystemFacts{
+		CollectedAt:  now.UTC(),
+		Hostname:     sanitize(hostname, 255),
+		OS:           agentv1.OperatingSystem{Platform: runtime.GOOS},
 		Architecture: runtime.GOARCH,
-		CPU:          CPUFacts{LogicalCores: runtime.NumCPU()},
-		Agent: AgentRuntimeFacts{
-			Version:   sanitizeFact(agentVersion, 128),
-			GoVersion: runtime.Version(),
-		},
+		LogicalCPUs:  runtime.NumCPU(),
+		Agent:        agentv1.AgentRuntimeInfo{Version: sanitize(agentVersion, 64), GoVersion: runtime.Version()},
 	}
-	platformFacts, err := collectPlatformFacts(ctx)
-	if err != nil {
-		return SystemFacts{}, err
-	}
-	facts.OS.Name = sanitizeFact(platformFacts.OSName, 128)
-	facts.OS.Version = sanitizeFact(platformFacts.OSVersion, 64)
-	facts.OS.Kernel = sanitizeFact(platformFacts.Kernel, 128)
-	facts.Memory = platformFacts.Memory
-	facts.UptimeSeconds = platformFacts.UptimeSeconds
-	facts.RootFS = platformFacts.RootFS
-	if err := factsv1.Validate(facts); err != nil {
-		return SystemFacts{}, fmt.Errorf("validate collected system facts: %w", err)
+	collectPlatformFacts(&facts)
+	if err := ctx.Err(); err != nil {
+		return agentv1.SystemFacts{}, err
 	}
 	return facts, nil
 }
 
-func sanitizeFact(value string, max int) string {
-	value = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(value, "\r", " "), "\n", " "))
-	if len(value) > max {
-		return value[:max]
+func sanitize(value string, maxLength int) string {
+	value = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, value)
+	value = strings.TrimSpace(value)
+	if len(value) > maxLength {
+		value = value[:maxLength]
 	}
 	return value
 }
 
-type platformFacts struct {
-	OSName        string
-	OSVersion     string
-	Kernel        string
-	Memory        *MemoryFacts
-	UptimeSeconds *uint64
-	RootFS        *FilesystemFacts
+func readSmallFile(path string) ([]byte, bool) {
+	file, err := os.Open(path) // #nosec G304 -- fixed, non-user-controlled paths.
+	if err != nil {
+		return nil, false
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxProcFileBytes))
+	return data, err == nil
+}
+
+// parseOSRelease extracts PRETTY_NAME and VERSION_ID from os-release(5).
+func parseOSRelease(data []byte) (name, version string) {
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	for scanner.Scan() {
+		key, value, ok := strings.Cut(strings.TrimSpace(scanner.Text()), "=")
+		if !ok {
+			continue
+		}
+		value = strings.Trim(value, `"'`)
+		switch key {
+		case "PRETTY_NAME":
+			name = sanitize(value, 128)
+		case "VERSION_ID":
+			version = sanitize(value, 64)
+		}
+	}
+	return name, version
+}
+
+// parseMeminfo extracts MemTotal and MemAvailable from /proc/meminfo.
+func parseMeminfo(data []byte) *agentv1.CapacityFacts {
+	var total, available uint64
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		value, err := strconv.ParseUint(fields[1], 10, 64)
+		if err != nil || value > math.MaxUint64/1024 {
+			continue
+		}
+		switch fields[0] {
+		case "MemTotal:":
+			total = value * 1024
+		case "MemAvailable:":
+			available = value * 1024
+		}
+	}
+	if total == 0 || available > total {
+		return nil
+	}
+	return &agentv1.CapacityFacts{TotalBytes: total, AvailableBytes: available}
+}
+
+// parseUptime extracts whole seconds from /proc/uptime.
+func parseUptime(data []byte) *uint64 {
+	fields := strings.Fields(string(data))
+	if len(fields) == 0 {
+		return nil
+	}
+	seconds, err := strconv.ParseFloat(fields[0], 64)
+	if err != nil || math.IsNaN(seconds) || seconds < 0 || seconds >= math.MaxUint64 {
+		return nil
+	}
+	value := uint64(seconds)
+	return &value
+}
+
+func inContainer() bool {
+	for _, marker := range []string{"/.dockerenv", "/run/.containerenv"} {
+		if info, err := os.Stat(marker); err == nil && !info.IsDir() {
+			return true
+		}
+	}
+	return false
 }

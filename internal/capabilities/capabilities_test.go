@@ -5,108 +5,250 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/machinarchy/machinarchy-agent/internal/config"
-
-	servicesv1 "github.com/machinarchy/machinarchy-protocol/services/v1"
+	"github.com/machinarchy/machinarchy-agent/protocol/agentv1"
 )
 
-func capabilityTestConfig() config.Config {
-	return config.Config{
-		Environment: "test", LogLevel: "info", ClientName: "machinarchy-agent-test",
-		BrokerURLs: "nats://127.0.0.1:4222", ConnectTimeout: time.Second,
-		StartupTimeout: time.Second, ReconnectWait: time.Second, DrainTimeout: time.Second,
-		RequestTimeout: time.Second, EventBufferSize: config.DefaultEventBufferSize,
-		OperationWorkers: config.DefaultOperationWorkers, OperationQueueSize: config.DefaultOperationQueue,
-		MaxOperationTimeout: 5 * time.Minute, MaxOperationInputBytes: config.MaxOperationInputBytes,
-		MaxOperationOutputBytes: config.MaxOperationOutputBytes, ResultPublishTimeout: 5 * time.Second,
-		IdentityFile: "./data/agent/identity.json", AgentVersion: "test",
-		RegistrationSubject: "machinarchy.v1.agent.register", LeaseRenewSubject: "machinarchy.v1.agent.lease.renew",
-	}
-}
-
-func TestDefaultCapabilityRegistryContainsOnlyReadOnlyBaseline(t *testing.T) {
-	registry, err := NewDefaultRegistry("test", capabilityTestConfig())
-	if err != nil {
-		t.Fatalf("NewDefaultRegistry() error = %v", err)
-	}
-	if got, want := strings.Join(registry.Names(), ","), "runtime.info,system.facts"; got != want {
-		t.Fatalf("default capabilities = %q, want %q", got, want)
-	}
-}
-
-func TestCapabilityRegistryAddsOnlyExplicitlyEnabledServiceOperations(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("the initial service provider is Linux/systemd only")
-	}
-	systemctlPath := filepath.Join(t.TempDir(), "systemctl")
-	if err := os.WriteFile(systemctlPath, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+// fakeSystemctl writes a shell script standing in for systemctl. The service
+// adapter is plain os/exec, so these tests run on any Unix, not only Linux.
+func fakeSystemctl(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "systemctl")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	cfg := capabilityTestConfig()
-	cfg.ServiceManagementEnabled = true
-	cfg.AllowedServices = []string{"nginx.service"}
-	cfg.SystemctlPath = systemctlPath
-	registry, err := NewDefaultRegistry("test", cfg)
-	if err != nil {
-		t.Fatalf("NewDefaultRegistry(status) error = %v", err)
-	}
-	if got, want := strings.Join(registry.Names(), ","), "runtime.info,service.status,system.facts"; got != want {
-		t.Fatalf("status capabilities = %q, want %q", got, want)
-	}
-
-	cfg.ServiceControlEnabled = true
-	registry, err = NewDefaultRegistry("test", cfg)
-	if err != nil {
-		t.Fatalf("NewDefaultRegistry(control) error = %v", err)
-	}
-	if got, want := strings.Join(registry.Names(), ","), "runtime.info,service.control,service.status,system.facts"; got != want {
-		t.Fatalf("service capabilities = %q, want %q", got, want)
-	}
+	return path
 }
 
-func TestRuntimeInfoReportsOnlyRegisteredCapabilities(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("the initial service provider is Linux/systemd only")
-	}
-	systemctlPath := filepath.Join(t.TempDir(), "systemctl")
-	if err := os.WriteFile(systemctlPath, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	cfg := capabilityTestConfig()
-	cfg.ServiceManagementEnabled = true
-	cfg.ServiceControlEnabled = true
-	cfg.AllowedServices = []string{"nginx.service"}
-	cfg.SystemctlPath = systemctlPath
-	registry, err := NewDefaultRegistry("test", cfg)
+const showOutput = `printf '%s\n' 'Id=nginx.service' 'LoadState=loaded' 'ActiveState=active' 'SubState=running' 'UnitFileState=enabled' 'Description=nginx'`
+
+func TestRegistryBaselineIsReadOnly(t *testing.T) {
+	registry, err := New(Options{AgentVersion: "1.0.0"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	capability, ok := registry.Lookup("runtime.info")
+	want := []string{agentv1.CapabilityRuntimeInfo, agentv1.CapabilitySystemFacts}
+	if got := registry.Names(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Names() = %v, want %v", got, want)
+	}
+}
+
+func TestRegistryAddsServiceCapabilitiesOnlyWhenEnabled(t *testing.T) {
+	path := fakeSystemctl(t, "exit 0")
+	statusOnly, err := New(Options{ServiceEnabled: true, Services: ServiceOptions{SystemctlPath: path, Allowed: []string{"nginx.service"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := statusOnly.Lookup(agentv1.CapabilityServiceControl); ok {
+		t.Fatal("service.control registered without ControlEnabled")
+	}
+	full, err := New(Options{ServiceEnabled: true, Services: ServiceOptions{SystemctlPath: path, Allowed: []string{"nginx.service"}, ControlEnabled: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := full.Lookup(agentv1.CapabilityServiceControl); !ok {
+		t.Fatal("service.control missing when enabled")
+	}
+	output, err := mustLookup(t, full, agentv1.CapabilityRuntimeInfo).Execute(context.Background(), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var info agentv1.RuntimeInfo
+	if err := json.Unmarshal(output, &info); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(info.Capabilities, full.Names()) {
+		t.Fatalf("runtime.info capabilities = %v, want %v", info.Capabilities, full.Names())
+	}
+}
+
+func TestRegistryRejectsUnsafeServiceConfig(t *testing.T) {
+	path := fakeSystemctl(t, "exit 0")
+	for name, options := range map[string]ServiceOptions{
+		"empty allowlist":  {SystemctlPath: path},
+		"bad unit":         {SystemctlPath: path, Allowed: []string{"-x.service"}},
+		"relative binary":  {SystemctlPath: "systemctl", Allowed: []string{"nginx.service"}},
+		"missing binary":   {SystemctlPath: "/nonexistent/systemctl", Allowed: []string{"nginx.service"}},
+		"non-service unit": {SystemctlPath: path, Allowed: []string{"nginx.socket"}},
+	} {
+		if _, err := New(Options{ServiceEnabled: true, Services: options}); err == nil {
+			t.Errorf("%s: New() succeeded", name)
+		}
+	}
+}
+
+func mustLookup(t *testing.T, registry *Registry, name string) Capability {
+	t.Helper()
+	capability, ok := registry.Lookup(name)
 	if !ok {
-		t.Fatal("runtime.info capability is missing")
+		t.Fatalf("capability %s not registered", name)
 	}
-	output, err := capability.Execute(context.Background(), json.RawMessage(`{}`))
+	return capability
+}
+
+func TestEmptyInputCapabilitiesRejectFields(t *testing.T) {
+	registry, err := New(Options{AgentVersion: "1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var result struct {
-		Capabilities []string `json:"capabilities"`
+	for _, name := range []string{agentv1.CapabilityRuntimeInfo, agentv1.CapabilitySystemFacts} {
+		for _, input := range []string{`{"x":1}`, `[]`, `{} {}`} {
+			_, err := mustLookup(t, registry, name).Execute(context.Background(), json.RawMessage(input))
+			if !IsInvalidInput(err) {
+				t.Errorf("%s(%s) error = %v, want invalid input", name, input, err)
+			}
+		}
 	}
-	if err := json.Unmarshal(output, &result); err != nil {
+}
+
+func TestSystemFactsAreBoundedAndNonSensitive(t *testing.T) {
+	t.Setenv("MACHINARCHY_AGENT_NATS_TOKEN", "secret-token-value")
+	facts, err := CollectSystemFacts(context.Background(), "1.0.0", time.Now())
+	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"runtime.info", servicesv1.CapabilityControl, servicesv1.CapabilityStatus, "system.facts"}
-	if len(result.Capabilities) != len(want) {
-		t.Fatalf("runtime.info capabilities = %#v, want %#v", result.Capabilities, want)
+	encoded, _ := json.Marshal(facts)
+	if len(encoded) > maxFactsBytes || strings.Contains(string(encoded), "secret-token-value") {
+		t.Fatalf("facts too large or leak environment: %s", encoded)
 	}
-	for i := range want {
-		if result.Capabilities[i] != want[i] {
-			t.Fatalf("runtime.info capabilities = %#v, want %#v", result.Capabilities, want)
+	if facts.OS.Platform == "" || facts.LogicalCPUs < 1 {
+		t.Fatalf("baseline facts missing: %+v", facts)
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := CollectSystemFacts(cancelled, "1", time.Now()); err == nil {
+		t.Fatal("cancelled context ignored")
+	}
+}
+
+func TestFactParsers(t *testing.T) {
+	name, version := parseOSRelease([]byte("NAME=Debian\nPRETTY_NAME=\"Debian GNU/Linux 12 (bookworm)\"\nVERSION_ID=\"12\"\n"))
+	if name != "Debian GNU/Linux 12 (bookworm)" || version != "12" {
+		t.Fatalf("parseOSRelease() = %q, %q", name, version)
+	}
+	memory := parseMeminfo([]byte("MemTotal:  2048 kB\nMemFree: 1 kB\nMemAvailable: 1024 kB\n"))
+	if memory == nil || memory.TotalBytes != 2048*1024 || memory.AvailableBytes != 1024*1024 {
+		t.Fatalf("parseMeminfo() = %+v", memory)
+	}
+	if parseMeminfo([]byte("MemTotal: 1 kB\nMemAvailable: 2 kB\n")) != nil {
+		t.Fatal("available > total accepted")
+	}
+	if uptime := parseUptime([]byte("1234.56 99.0\n")); uptime == nil || *uptime != 1234 {
+		t.Fatalf("parseUptime() = %v", uptime)
+	}
+	for _, bad := range []string{"", "NaN 1", "-1 0", "x"} {
+		if parseUptime([]byte(bad)) != nil {
+			t.Errorf("parseUptime(%q) accepted", bad)
+		}
+	}
+	if got := sanitize("a\nb\x00c ", 10); got != "a b c" {
+		t.Fatalf("sanitize() = %q", got)
+	}
+}
+
+func TestServiceStatusParsesAndValidates(t *testing.T) {
+	path := fakeSystemctl(t, showOutput)
+	registry, err := New(Options{ServiceEnabled: true, Services: ServiceOptions{SystemctlPath: path, Allowed: []string{"nginx.service"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := mustLookup(t, registry, agentv1.CapabilityServiceStatus)
+	output, err := status.Execute(context.Background(), json.RawMessage(`{"service":"nginx.service"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got agentv1.ServiceStatus
+	if err := json.Unmarshal(output, &got); err != nil {
+		t.Fatal(err)
+	}
+	want := agentv1.ServiceStatus{Service: "nginx.service", LoadState: "loaded", ActiveState: "active", SubState: "running", UnitFileState: "enabled", Description: "nginx"}
+	if got != want {
+		t.Fatalf("status = %+v, want %+v", got, want)
+	}
+	for _, input := range []string{`{"service":"ssh.service"}`, `{"service":"--help"}`, `{"service":"nginx.service","x":1}`} {
+		if _, err := status.Execute(context.Background(), json.RawMessage(input)); !IsInvalidInput(err) {
+			t.Errorf("status(%s) error = %v, want invalid input", input, err)
+		}
+	}
+}
+
+func TestServiceControlUsesFixedArgumentLayout(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "args")
+	path := fakeSystemctl(t, `printf '%s\n' "$@" > "`+logPath+`"; env > "`+logPath+`.env"`)
+	t.Setenv("MACHINARCHY_AGENT_NATS_TOKEN", "must-not-leak")
+	registry, err := New(Options{ServiceEnabled: true, Services: ServiceOptions{SystemctlPath: path, Allowed: []string{"nginx.service"}, ControlEnabled: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := mustLookup(t, registry, agentv1.CapabilityServiceControl)
+	if _, err := control.Execute(context.Background(), json.RawMessage(`{"service":"nginx.service","action":"restart"}`)); err != nil {
+		t.Fatal(err)
+	}
+	args, _ := os.ReadFile(logPath)
+	if got := strings.Fields(string(args)); !reflect.DeepEqual(got, []string{"--no-ask-password", "--", "restart", "nginx.service"}) {
+		t.Fatalf("systemctl args = %v", got)
+	}
+	env, _ := os.ReadFile(logPath + ".env")
+	if strings.Contains(string(env), "must-not-leak") {
+		t.Fatal("agent environment leaked to systemctl")
+	}
+	for _, input := range []string{`{"service":"nginx.service","action":"mask"}`, `{"service":"nginx.service","action":"--now"}`, `{"service":"other.service","action":"stop"}`} {
+		if _, err := control.Execute(context.Background(), json.RawMessage(input)); !IsInvalidInput(err) {
+			t.Errorf("control(%s) error = %v, want invalid input", input, err)
+		}
+	}
+}
+
+func TestServiceControlSerializesPerUnit(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "log")
+	path := fakeSystemctl(t, `echo start >> "`+logPath+`"; sleep 0.2; echo end >> "`+logPath+`"`)
+	s := &systemctl{path: path, locks: map[string]*sync.Mutex{}}
+	var wg sync.WaitGroup
+	for range 3 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := s.Control(context.Background(), "nginx.service", "restart"); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	data, _ := os.ReadFile(logPath)
+	if got := strings.Fields(string(data)); !reflect.DeepEqual(got, []string{"start", "end", "start", "end", "start", "end"}) {
+		t.Fatalf("actions on one unit overlapped: %v", got)
+	}
+	if s.unitLock("a.service") != s.unitLock("a.service") || s.unitLock("a.service") == s.unitLock("b.service") {
+		t.Fatal("unit locks are not stable per unit")
+	}
+}
+
+func TestSystemctlFailuresAreBounded(t *testing.T) {
+	path := fakeSystemctl(t, `head -c 20000 /dev/zero | tr '\0' 'x'`)
+	s := &systemctl{path: path, locks: map[string]*sync.Mutex{}}
+	if _, err := s.Status(context.Background(), "nginx.service"); err == nil {
+		t.Fatal("oversized output accepted")
+	}
+	exitPath := fakeSystemctl(t, "exit 5")
+	s = &systemctl{path: exitPath, locks: map[string]*sync.Mutex{}}
+	if err := s.Control(context.Background(), "nginx.service", "stop"); err == nil || !strings.Contains(err.Error(), "status 5") {
+		t.Fatalf("Control() error = %v", err)
+	}
+	slowPath := fakeSystemctl(t, "sleep 5")
+	s = &systemctl{path: slowPath, locks: map[string]*sync.Mutex{}}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := s.Status(ctx, "nginx.service"); err == nil {
+		t.Fatal("cancellation ignored")
+	}
+	for _, bad := range []string{"Id=other.service\nLoadState=x\nActiveState=x\nSubState=x", "garbage", "Id=nginx.service\nId=nginx.service", "Id=nginx.service\nEvil=1"} {
+		if _, err := parseShow("nginx.service", bad); err == nil {
+			t.Errorf("parseShow(%q) accepted", bad)
 		}
 	}
 }
