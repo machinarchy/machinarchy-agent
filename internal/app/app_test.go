@@ -122,6 +122,27 @@ func (r *running) stop(t *testing.T) error {
 	}
 }
 
+// waitServing blocks until the agent has registered, persisted its identity
+// and is consuming commands, proven by a full runtime.info round trip.
+// WaitForAgent alone only proves the controller recorded the registration;
+// the agent may still be waiting for the response.
+func (e *env) waitServing(t *testing.T) string {
+	t.Helper()
+	agentID, err := e.controller.WaitForAgent(timeout(t, 10*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := timeout(t, 20*time.Second)
+	op, err := e.controller.Request(ctx, agentID, agentv1.CapabilityRuntimeInfo, map[string]any{}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.controller.Await(ctx, op, agentv1.StatusSucceeded); err != nil {
+		t.Fatal(err)
+	}
+	return agentID
+}
+
 func timeout(t *testing.T, d time.Duration) context.Context {
 	ctx, cancel := context.WithTimeout(context.Background(), d)
 	t.Cleanup(cancel)
@@ -224,10 +245,7 @@ func TestAgentRejectsForgedAndMisaddressedCommands(t *testing.T) {
 func TestAgentRestartKeepsIdentity(t *testing.T) {
 	e := newEnv(t)
 	first := e.start(e.config(nil))
-	agentID, err := e.controller.WaitForAgent(timeout(t, 10*time.Second))
-	if err != nil {
-		t.Fatal(err)
-	}
+	agentID := e.waitServing(t)
 	if err := first.stop(t); err != nil {
 		t.Fatalf("clean shutdown returned %v", err)
 	}
@@ -281,9 +299,7 @@ func TestResponsesFromUntrustedControllerAreIgnored(t *testing.T) {
 func TestRevokedLeaseClearsIdentity(t *testing.T) {
 	e := newEnv(t)
 	r := e.start(e.config(nil))
-	if _, err := e.controller.WaitForAgent(timeout(t, 10*time.Second)); err != nil {
-		t.Fatal(err)
-	}
+	e.waitServing(t)
 	e.controller.RevokeRenewals.Store(true)
 	select {
 	case err := <-r.done:
