@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"io"
 	"math"
 	"os"
 	"runtime"
@@ -40,7 +39,10 @@ func CollectSystemFacts(ctx context.Context, agentVersion string, now time.Time)
 	if err := ctx.Err(); err != nil {
 		return agentv1.SystemFacts{}, err
 	}
-	hostname, _ := os.Hostname()
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = ""
+	}
 	facts := agentv1.SystemFacts{
 		CollectedAt:  now.UTC(),
 		Hostname:     sanitize(hostname, 255),
@@ -68,16 +70,6 @@ func sanitize(value string, maxLength int) string {
 		value = value[:maxLength]
 	}
 	return value
-}
-
-func readSmallFile(path string) ([]byte, bool) {
-	file, err := os.Open(path) // #nosec G304 -- fixed, non-user-controlled paths.
-	if err != nil {
-		return nil, false
-	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, maxProcFileBytes))
-	return data, err == nil
 }
 
 // parseOSRelease extracts PRETTY_NAME and VERSION_ID from os-release(5).
@@ -136,13 +128,4 @@ func parseUptime(data []byte) *uint64 {
 	}
 	value := uint64(seconds)
 	return &value
-}
-
-func inContainer() bool {
-	for _, marker := range []string{"/.dockerenv", "/run/.containerenv"} {
-		if info, err := os.Stat(marker); err == nil && !info.IsDir() {
-			return true
-		}
-	}
-	return false
 }

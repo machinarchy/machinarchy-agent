@@ -32,11 +32,19 @@ func ValidIdentifier(value string) bool {
 		return false
 	}
 	for _, r := range value {
-		if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') && r != '_' && r != '-' {
+		if !isIdentifierRune(r) {
 			return false
 		}
 	}
 	return true
+}
+
+func isIdentifierRune(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+		return true
+	}
+	return false
 }
 
 func validText(value string, maxLength int, required bool) bool {

@@ -216,8 +216,8 @@ func (a *Agent) ensureRegistered(ctx context.Context, nc *nats.Conn) (state.Iden
 }
 
 func (a *Agent) register(ctx context.Context, nc *nats.Conn, requestID string) (state.Identity, error) {
-	hostname, _ := os.Hostname()
-	if hostname == "" {
+	hostname, err := os.Hostname()
+	if err != nil || hostname == "" {
 		hostname = "unknown"
 	}
 	request := &agentv1.RegisterRequest{
@@ -337,8 +337,14 @@ func (a *Agent) consume(ctx context.Context, nc *nats.Conn, agentID string, disp
 	if err != nil {
 		return fmt.Errorf("JetStream: %w", err)
 	}
-	subject, _ := agentv1.CommandSubject(agentID)
-	name, _ := agentv1.CommandConsumer(agentID)
+	subject, err := agentv1.CommandSubject(agentID)
+	if err != nil {
+		return err
+	}
+	name, err := agentv1.CommandConsumer(agentID)
+	if err != nil {
+		return err
+	}
 	consumer, err := retry(ctx, a.logger, "command consumer binding", func() (jetstream.Consumer, error) {
 		bindCtx, cancel := context.WithTimeout(ctx, a.cfg.RequestTimeout)
 		defer cancel()
@@ -378,23 +384,23 @@ func (a *Agent) consume(ctx context.Context, nc *nats.Conn, agentID string, disp
 
 func (a *Agent) handle(ctx context.Context, agentID string, disp *dispatch.Dispatcher, msg jetstream.Msg) {
 	if !a.leaseValid() {
-		_ = msg.NakWithDelay(5 * time.Second) // paused until the lease is renewed
+		a.settle(msg.NakWithDelay(5*time.Second), "nak (lease expired)") // paused until the lease is renewed
 		return
 	}
 	var cmd agentv1.Command
 	if err := agentv1.Open(a.cfg.ControllerPublicKey, agentv1.KindCommand, msg.Data(), agentv1.MaxCommandMessageBytes, &cmd); err != nil {
 		a.logger.Warn("discarding unauthenticated or malformed command", "error", err)
-		_ = msg.Term()
+		a.settle(msg.Term(), "term")
 		return
 	}
 	if err := cmd.ValidateAt(agentID, time.Now()); err != nil {
 		a.logger.Warn("discarding command", "command_id", cmd.CommandID, "error", err)
-		_ = msg.Term()
+		a.settle(msg.Term(), "term")
 		return
 	}
 	if err := disp.Handle(ctx, cmd); err != nil {
 		a.logger.Warn("command not processed; will be redelivered", "command_id", cmd.CommandID, "error", err)
-		_ = msg.NakWithDelay(2 * time.Second)
+		a.settle(msg.NakWithDelay(2*time.Second), "nak")
 		return
 	}
 	ackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), a.cfg.RequestTimeout)
@@ -402,6 +408,13 @@ func (a *Agent) handle(ctx context.Context, agentID string, disp *dispatch.Dispa
 	if err := msg.DoubleAck(ackCtx); err != nil {
 		// Redelivery is harmless: the replay ledger drops duplicates.
 		a.logger.Warn("command acknowledgement not confirmed", "command_id", cmd.CommandID, "error", err)
+	}
+}
+
+// settle logs a failed nak/term; JetStream redelivers after AckWait anyway.
+func (a *Agent) settle(err error, action string) {
+	if err != nil {
+		a.logger.Warn("command "+action+" failed; broker will redeliver after ack wait", "error", err)
 	}
 }
 

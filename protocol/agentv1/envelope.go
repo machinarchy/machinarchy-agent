@@ -150,7 +150,7 @@ func decodeEnvelope(kind Kind, raw []byte, limit int) (Envelope, error) {
 		return envelope, fmt.Errorf("%w: message is empty or exceeds %d bytes", ErrInvalidMessage, limit)
 	}
 	if err := DecodeStrict(raw, &envelope); err != nil {
-		return Envelope{}, fmt.Errorf("%w: %v", ErrInvalidMessage, err)
+		return Envelope{}, fmt.Errorf("%w: %w", ErrInvalidMessage, err)
 	}
 	switch {
 	case envelope.Version != ProtocolVersion:
@@ -167,10 +167,10 @@ func decodeEnvelope(kind Kind, raw []byte, limit int) (Envelope, error) {
 
 func decodeBody(body []byte, out Body) error {
 	if err := DecodeStrict(body, out); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidMessage, err)
+		return fmt.Errorf("%w: %w", ErrInvalidMessage, err)
 	}
 	if err := out.Validate(); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidMessage, err)
+		return fmt.Errorf("%w: %w", ErrInvalidMessage, err)
 	}
 	return nil
 }

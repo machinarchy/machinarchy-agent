@@ -223,7 +223,8 @@ func TestServiceControlSerializesPerUnit(t *testing.T) {
 	if got := strings.Fields(string(data)); !reflect.DeepEqual(got, []string{"start", "end", "start", "end", "start", "end"}) {
 		t.Fatalf("actions on one unit overlapped: %v", got)
 	}
-	if s.unitLock("a.service") != s.unitLock("a.service") || s.unitLock("a.service") == s.unitLock("b.service") {
+	first, again, other := s.unitLock("a.service"), s.unitLock("a.service"), s.unitLock("b.service")
+	if first != again || first == other {
 		t.Fatal("unit locks are not stable per unit")
 	}
 }

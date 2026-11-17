@@ -125,8 +125,7 @@ func ValidateServiceName(name string) error {
 		return errors.New("service must be an exact .service unit name")
 	}
 	for _, r := range name {
-		if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') &&
-			r != '_' && r != '-' && r != '.' && r != '@' {
+		if !isIdentifierRune(r) && r != '.' && r != '@' {
 			return errors.New("service unit name contains an invalid character")
 		}
 	}

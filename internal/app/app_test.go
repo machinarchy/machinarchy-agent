@@ -95,7 +95,7 @@ func (e *env) start(cfg config.Config) *running {
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &running{cancel: cancel, done: make(chan error, 1)}
 	go func() { r.done <- agent.Run(ctx) }()
-	e.t.Cleanup(func() { r.stop(e.t) })
+	e.t.Cleanup(func() { _ = r.stop(e.t) })
 	return r
 }
 

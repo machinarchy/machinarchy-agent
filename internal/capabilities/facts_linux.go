@@ -3,6 +3,8 @@
 package capabilities
 
 import (
+	"io"
+	"os"
 	"strings"
 	"syscall"
 
@@ -46,4 +48,23 @@ func rootFilesystem() *agentv1.CapacityFacts {
 		return nil
 	}
 	return &agentv1.CapacityFacts{TotalBytes: stat.Blocks * blockSize, AvailableBytes: stat.Bavail * blockSize}
+}
+
+func readSmallFile(path string) ([]byte, bool) {
+	file, err := os.Open(path) // #nosec G304 -- fixed, non-user-controlled paths.
+	if err != nil {
+		return nil, false
+	}
+	defer func() { _ = file.Close() }()
+	data, err := io.ReadAll(io.LimitReader(file, maxProcFileBytes))
+	return data, err == nil
+}
+
+func inContainer() bool {
+	for _, marker := range []string{"/.dockerenv", "/run/.containerenv"} {
+		if info, err := os.Stat(marker); err == nil && !info.IsDir() {
+			return true
+		}
+	}
+	return false
 }

@@ -37,16 +37,16 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) in
 		return 2
 	}
 	if *showVersion {
-		fmt.Fprintf(stdout, "machinarchy-agent %s (commit %s, built %s, protocol v%d)\n", Version, Commit, BuildTime, agentv1.ProtocolVersion)
+		_, _ = fmt.Fprintf(stdout, "machinarchy-agent %s (commit %s, built %s, protocol v%d)\n", Version, Commit, BuildTime, agentv1.ProtocolVersion)
 		return 0
 	}
 	cfg, err := config.Load(getenv)
 	if err != nil {
-		fmt.Fprintf(stderr, "invalid configuration: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "invalid configuration: %v\n", err)
 		return 2
 	}
 	if *checkConfig {
-		fmt.Fprintln(stdout, "configuration is valid")
+		_, _ = fmt.Fprintln(stdout, "configuration is valid")
 		return 0
 	}
 	logger := slog.New(slog.NewJSONHandler(stdout, &slog.HandlerOptions{Level: cfg.LogLevel})).
@@ -59,7 +59,7 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) in
 		return 1
 	}
 	if *showKey {
-		fmt.Fprintln(stdout, agentv1.EncodePublicKey(agent.PublicKey()))
+		_, _ = fmt.Fprintln(stdout, agentv1.EncodePublicKey(agent.PublicKey()))
 		return 0
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

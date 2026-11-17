@@ -1,6 +1,8 @@
 module github.com/machinarchy/machinarchy-agent
 
-go 1.26.0
+go 1.27.0
+
+toolchain go1.27.4
 
 require (
 	github.com/nats-io/nats-server/v2 v2.15.3

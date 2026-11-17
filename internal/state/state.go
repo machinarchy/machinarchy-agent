@@ -277,17 +277,17 @@ func write(path string, doc *Document) error {
 		return fmt.Errorf("create temporary state file: %w", err)
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath) // no-op after a successful rename
+	defer func() { _ = os.Remove(tmpPath) }() // no-op after a successful rename
 	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("protect temporary state file: %w", err)
 	}
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("write temporary state file: %w", err)
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("sync temporary state file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
@@ -303,7 +303,7 @@ func write(path string, doc *Document) error {
 	if err != nil {
 		return fmt.Errorf("open state directory for sync: %w", err)
 	}
-	defer dirHandle.Close()
+	defer func() { _ = dirHandle.Close() }()
 	if err := dirHandle.Sync(); err != nil {
 		return fmt.Errorf("sync state directory: %w", err)
 	}

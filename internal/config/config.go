@@ -24,10 +24,10 @@ const (
 	EnvLogLevel                = "MACHINARCHY_LOG_LEVEL"
 	EnvAgentName               = "MACHINARCHY_AGENT_NAME"
 	EnvNATSURL                 = "MACHINARCHY_AGENT_NATS_URL"
-	EnvNATSCredentialsFile     = "MACHINARCHY_AGENT_NATS_CREDENTIALS_FILE"
-	EnvNATSToken               = "MACHINARCHY_AGENT_NATS_TOKEN"
+	EnvNATSCredentialsFile     = "MACHINARCHY_AGENT_NATS_CREDENTIALS_FILE" // #nosec G101 -- environment variable name, not a credential
+	EnvNATSToken               = "MACHINARCHY_AGENT_NATS_TOKEN"            // #nosec G101 -- environment variable name, not a credential
 	EnvNATSUsername            = "MACHINARCHY_AGENT_NATS_USERNAME"
-	EnvNATSPassword            = "MACHINARCHY_AGENT_NATS_PASSWORD"
+	EnvNATSPassword            = "MACHINARCHY_AGENT_NATS_PASSWORD" // #nosec G101 -- environment variable name, not a credential
 	EnvNATSCAFile              = "MACHINARCHY_AGENT_NATS_CA_FILE"
 	EnvNATSCertFile            = "MACHINARCHY_AGENT_NATS_CERT_FILE"
 	EnvNATSKeyFile             = "MACHINARCHY_AGENT_NATS_KEY_FILE"
@@ -39,8 +39,8 @@ const (
 	EnvStateFile               = "MACHINARCHY_AGENT_STATE_FILE"
 	EnvControllerPublicKey     = "MACHINARCHY_AGENT_CONTROLLER_PUBLIC_KEY"
 	EnvControllerPublicKeyFile = "MACHINARCHY_AGENT_CONTROLLER_PUBLIC_KEY_FILE"
-	EnvEnrollmentToken         = "MACHINARCHY_AGENT_ENROLLMENT_TOKEN"
-	EnvEnrollmentTokenFile     = "MACHINARCHY_AGENT_ENROLLMENT_TOKEN_FILE"
+	EnvEnrollmentToken         = "MACHINARCHY_AGENT_ENROLLMENT_TOKEN"      // #nosec G101 -- environment variable name, not a credential
+	EnvEnrollmentTokenFile     = "MACHINARCHY_AGENT_ENROLLMENT_TOKEN_FILE" // #nosec G101 -- environment variable name, not a credential
 	EnvOperationWorkers        = "MACHINARCHY_AGENT_OPERATION_WORKERS"
 	EnvOperationQueueSize      = "MACHINARCHY_AGENT_OPERATION_QUEUE_SIZE"
 	EnvOperationTimeout        = "MACHINARCHY_AGENT_OPERATION_TIMEOUT"

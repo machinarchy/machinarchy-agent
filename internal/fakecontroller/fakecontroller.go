@@ -40,6 +40,7 @@ type Controller struct {
 	registrations map[string]string            // request ID -> agent ID
 	results       chan agentv1.Result
 	seq           atomic.Int64
+	errs          chan error
 
 	// RevokeRenewals makes lease renewals fail with lease_revoked.
 	RevokeRenewals atomic.Bool
@@ -68,7 +69,7 @@ func Start(ctx context.Context, url string, key ed25519.PrivateKey, enrollmentTo
 	}
 	c := &Controller{Key: key, EnrollmentToken: enrollmentToken, LeaseTTL: time.Minute, Heartbeat: 5 * time.Second,
 		nc: nc, js: js, agents: map[string]ed25519.PublicKey{}, registrations: map[string]string{},
-		results: make(chan agentv1.Result, 256)}
+		results: make(chan agentv1.Result, 256), errs: make(chan error, 64)}
 	c.AutoAck.Store(true)
 	for subject, handler := range map[string]nats.MsgHandler{
 		agentv1.SubjectRegister:   c.onRegister,
@@ -88,9 +89,22 @@ func Start(ctx context.Context, url string, key ed25519.PrivateKey, enrollmentTo
 // Close stops serving.
 func (c *Controller) Close() {
 	for _, sub := range c.subs {
-		_ = sub.Unsubscribe()
+		c.report(sub.Unsubscribe())
 	}
 	c.nc.Close()
+}
+
+// Errors exposes internal failures (bounded; extra errors are dropped).
+func (c *Controller) Errors() <-chan error { return c.errs }
+
+func (c *Controller) report(err error) {
+	if err == nil {
+		return
+	}
+	select {
+	case c.errs <- err:
+	default:
+	}
 }
 
 // Results delivers verified results in arrival order.
@@ -116,9 +130,11 @@ func (c *Controller) keyFor(agentID string) (ed25519.PublicKey, bool) {
 
 func (c *Controller) reply(msg *nats.Msg, kind agentv1.Kind, body agentv1.Body) {
 	payload, err := agentv1.Seal(c.Key, kind, body)
-	if err == nil {
-		_ = msg.Respond(payload)
+	if err != nil {
+		c.report(err)
+		return
 	}
+	c.report(msg.Respond(payload))
 }
 
 func (c *Controller) lease() *agentv1.Lease {
@@ -156,11 +172,17 @@ func (c *Controller) onRegister(msg *nats.Msg) {
 
 // provision creates the agent's durable pull consumer.
 func (c *Controller) provision(agentID string) error {
-	subject, _ := agentv1.CommandSubject(agentID)
-	name, _ := agentv1.CommandConsumer(agentID)
+	subject, err := agentv1.CommandSubject(agentID)
+	if err != nil {
+		return err
+	}
+	name, err := agentv1.CommandConsumer(agentID)
+	if err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := c.js.CreateOrUpdateConsumer(ctx, agentv1.CommandStream, jetstream.ConsumerConfig{
+	_, err = c.js.CreateOrUpdateConsumer(ctx, agentv1.CommandStream, jetstream.ConsumerConfig{
 		Durable: name, FilterSubject: subject, AckPolicy: jetstream.AckExplicitPolicy,
 		AckWait: 10 * time.Second, MaxDeliver: 20, DeliverPolicy: jetstream.DeliverAllPolicy,
 	})
@@ -187,7 +209,7 @@ func (c *Controller) onResult(msg *nats.Msg) {
 		return
 	}
 	// The subject must match the signer so one agent cannot report for another.
-	if expected, _ := agentv1.ResultSubject(result.AgentID); msg.Subject != expected {
+	if expected, err := agentv1.ResultSubject(result.AgentID); err != nil || msg.Subject != expected {
 		return
 	}
 	select {
@@ -195,7 +217,7 @@ func (c *Controller) onResult(msg *nats.Msg) {
 	default:
 	}
 	if result.Status.Terminal() && c.AutoAck.Load() {
-		_ = c.Send(context.Background(), result.AgentID, agentv1.Command{Type: agentv1.CommandResultAck, OperationID: result.OperationID})
+		c.report(c.Send(context.Background(), result.AgentID, agentv1.Command{Type: agentv1.CommandResultAck, OperationID: result.OperationID}))
 	}
 }
 
