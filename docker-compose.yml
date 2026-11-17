@@ -1,3 +1,6 @@
+# Local NATS with JetStream for development. Start a controller (or
+# internal/fakecontroller via the integration tests) before running the agent
+# with MACHINARCHY_ENVIRONMENT=development.
 services:
   nats:
     image: nats:2.15.3-alpine
@@ -10,7 +13,3 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
-
-# The agent service is intentionally not started here. A reachable NATS server
-# is not sufficient: the Machinarchy controller must implement registration,
-# lease renewal, event publication, and operation-result ingestion first.

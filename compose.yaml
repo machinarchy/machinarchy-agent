@@ -1,5 +1,9 @@
 name: machinarchy-agent
 
+# Production profile. Secrets are bind-mounted files under ./secrets (0600,
+# owned by UID 10001): nats.creds and, until enrollment completes,
+# enrollment.token. MACHINARCHY_AGENT_NATS_URL and
+# MACHINARCHY_AGENT_CONTROLLER_PUBLIC_KEY come from .env.
 services:
   agent:
     image: ${MACHINARCHY_AGENT_IMAGE:-ghcr.io/machinarchy/machinarchy-agent:latest}
@@ -8,16 +12,16 @@ services:
       - .env
     environment:
       MACHINARCHY_ENVIRONMENT: production
-      MACHINARCHY_AGENT_STATE_FILE: /var/lib/machinarchy-agent/identity.json
-      MACHINARCHY_AGENT_OPERATION_STORE_FILE: /var/lib/machinarchy-agent/operations.json
+      MACHINARCHY_AGENT_STATE_FILE: /var/lib/machinarchy-agent/state.json
       MACHINARCHY_AGENT_SERVICE_MANAGEMENT_ENABLED: "false"
       MACHINARCHY_AGENT_SERVICE_CONTROL_ENABLED: "false"
       MACHINARCHY_AGENT_NATS_CREDENTIALS_FILE: /run/secrets/nats.creds
+      MACHINARCHY_AGENT_ENROLLMENT_TOKEN_FILE: ${MACHINARCHY_AGENT_ENROLLMENT_TOKEN_FILE:-}
     volumes:
       - agent-state:/var/lib/machinarchy-agent
       - type: bind
-        source: ./secrets/nats.creds
-        target: /run/secrets/nats.creds
+        source: ./secrets
+        target: /run/secrets
         read_only: true
         bind:
           create_host_path: false
@@ -35,6 +39,7 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    stop_grace_period: 30s
     restart: unless-stopped
 
 volumes:

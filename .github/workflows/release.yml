@@ -43,28 +43,13 @@ jobs:
             go.mod
             go.sum
 
-      - name: Configure optional private protocol module access
-        env:
-          MODULE_TOKEN: ${{ secrets.MACHINARCHY_PROTOCOL_READ_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ -n "${MODULE_TOKEN}" ]]; then
-            echo "GOPRIVATE=github.com/machinarchy/machinarchy-protocol" >> "${GITHUB_ENV}"
-            git config --global url."https://x-access-token:${MODULE_TOKEN}@github.com/".insteadOf "https://github.com/"
-          fi
-
       - name: Download modules
         run: go mod download
 
       - name: Verify source and deployment packaging
         run: |
           set -euo pipefail
-          make fmt-check
-          go test -count=1 ./...
-          go test -race -count=1 ./...
-          go vet ./...
-          make deployment-check
+          make fmt-check tidy-check vet test-race deployment-check
 
       - name: Build Linux binaries
         env:

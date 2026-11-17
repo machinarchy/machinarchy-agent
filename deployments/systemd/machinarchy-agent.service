@@ -13,12 +13,13 @@ Group=machagent
 ExecStart=/usr/local/bin/machinarchy-agent
 Restart=on-failure
 RestartSec=5s
-TimeoutStopSec=25s
+# Must exceed MACHINARCHY_AGENT_SHUTDOWN_TIMEOUT + MACHINARCHY_AGENT_DRAIN_TIMEOUT.
+TimeoutStopSec=35s
 KillSignal=SIGTERM
 
 EnvironmentFile=-/etc/machinarchy-agent/agent.env
 Environment=MACHINARCHY_ENVIRONMENT=production
-Environment=MACHINARCHY_AGENT_STATE_FILE=/var/lib/machinarchy-agent/identity.json
+Environment=MACHINARCHY_AGENT_STATE_FILE=/var/lib/machinarchy-agent/state.json
 Environment=HOME=/var/lib/machinarchy-agent
 WorkingDirectory=/var/lib/machinarchy-agent
 
@@ -27,18 +28,25 @@ StateDirectoryMode=0700
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
+PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
+RestrictNamespaces=true
 LockPersonality=true
+MemoryDenyWriteExecute=true
 RestrictSUIDSGID=true
 RestrictRealtime=true
 CapabilityBoundingSet=
 AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
+SystemCallFilter=@system-service
 ReadWritePaths=/var/lib/machinarchy-agent
 
 [Install]
