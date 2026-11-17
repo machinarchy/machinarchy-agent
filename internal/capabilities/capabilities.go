@@ -76,6 +76,16 @@ func New(options Options) (*Registry, error) {
 	return &Registry{capabilities: capabilities}, nil
 }
 
+// NewStatic builds a registry from explicit implementations. It exists for
+// tests of components that consume a registry.
+func NewStatic(capabilities map[string]Capability) *Registry {
+	copied := make(map[string]Capability, len(capabilities))
+	for name, capability := range capabilities {
+		copied[name] = capability
+	}
+	return &Registry{capabilities: copied}
+}
+
 // Lookup returns the named capability.
 func (r *Registry) Lookup(name string) (Capability, bool) {
 	capability, ok := r.capabilities[name]
