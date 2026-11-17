@@ -118,18 +118,10 @@ func (h *harness) start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	h.disp, h.cancel, h.done = disp, cancel, make(chan error, 1)
 	go func() { h.done <- disp.Run(ctx) }()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		disp.mu.Lock()
-		ready := disp.accepting
-		disp.mu.Unlock()
-		if ready {
-			return
-		}
-		if time.Now().After(deadline) {
-			h.t.Fatal("dispatcher did not start")
-		}
-		time.Sleep(5 * time.Millisecond)
+	select {
+	case <-disp.Ready():
+	case <-time.After(2 * time.Second):
+		h.t.Fatal("dispatcher did not become ready")
 	}
 }
 

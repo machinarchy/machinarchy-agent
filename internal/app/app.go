@@ -119,7 +119,16 @@ func (a *Agent) Run(ctx context.Context) error {
 	dispDone := make(chan error, 1)
 	go func() { dispDone <- disp.Run(dispCtx) }()
 	start("lease", func(ctx context.Context) error { return a.keepLease(ctx, nc, identity) })
-	start("commands", func(ctx context.Context) error { return a.consume(ctx, nc, identity.AgentID, disp) })
+	start("commands", func(ctx context.Context) error {
+		// Pull commands only after recovery, so none is nak'ed for arriving
+		// while the dispatcher is still starting.
+		select {
+		case <-disp.Ready():
+		case <-ctx.Done():
+			return nil
+		}
+		return a.consume(ctx, nc, identity.AgentID, disp)
+	})
 
 	<-runCtx.Done()
 	wg.Wait()

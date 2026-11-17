@@ -56,6 +56,7 @@ type Dispatcher struct {
 
 	queue chan string
 	wake  chan struct{}
+	ready chan struct{}
 
 	mu        sync.Mutex
 	accepting bool
@@ -91,7 +92,7 @@ func New(store *state.Store, registry *capabilities.Registry, publisher Publishe
 	return &Dispatcher{
 		opts: opts, store: store, registry: registry, publisher: publisher,
 		logger: logger.With("component", "dispatch"),
-		queue:  make(chan string, opts.QueueSize), wake: make(chan struct{}, 1),
+		queue:  make(chan string, opts.QueueSize), wake: make(chan struct{}, 1), ready: make(chan struct{}),
 		running: map[string]*execution{},
 	}, nil
 }
@@ -121,6 +122,7 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	}()
 
 	d.setAccepting(true)
+	close(d.ready)
 	<-ctx.Done()
 	d.setAccepting(false)
 	close(stopWorkers)
@@ -145,6 +147,10 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	d.publishPending(flushCtx)
 	return nil
 }
+
+// Ready is closed once recovery has finished and Handle accepts commands.
+// Consumers must not pull commands before then.
+func (d *Dispatcher) Ready() <-chan struct{} { return d.ready }
 
 func (d *Dispatcher) setAccepting(value bool) {
 	d.mu.Lock()

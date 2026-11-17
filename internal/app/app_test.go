@@ -81,6 +81,14 @@ func (e *env) config(mutate func(*config.Config)) config.Config {
 	return cfg
 }
 
+// testLogger discards agent logs unless AGENT_TEST_LOG is set.
+func testLogger() *slog.Logger {
+	if os.Getenv("AGENT_TEST_LOG") != "" {
+		return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	}
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
 type running struct {
 	cancel context.CancelFunc
 	done   chan error
@@ -88,7 +96,7 @@ type running struct {
 
 func (e *env) start(cfg config.Config) *running {
 	e.t.Helper()
-	agent, err := New(cfg, "test", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	agent, err := New(cfg, "test", testLogger())
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -306,5 +314,45 @@ func TestShutdownIsBoundedWhileWaitingForController(t *testing.T) {
 	}
 	if elapsed := time.Since(began); elapsed > 5*time.Second {
 		t.Fatalf("shutdown took %s", elapsed)
+	}
+}
+
+// TestCommandsNakedWhileLeaseExpiredAreRedelivered forces the "lease expired"
+// nak path and checks JetStream redelivers the command once the lease is
+// renewed, so a paused agent loses no work.
+func TestCommandsNakedWhileLeaseExpiredAreRedelivered(t *testing.T) {
+	e := newEnv(t)
+	agent, err := New(e.config(nil), "test", testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- agent.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	agentID, err := e.controller.WaitForAgent(timeout(t, 10*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Wait until the consumer is pulling, then expire the lease locally. The
+	// next scheduled renewal (5s heartbeat) restores it.
+	waitCtx := timeout(t, 30*time.Second)
+	op, err := e.controller.Request(waitCtx, agentID, agentv1.CapabilityRuntimeInfo, map[string]any{}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.controller.Await(waitCtx, op, agentv1.StatusSucceeded); err != nil {
+		t.Fatal(err)
+	}
+	agent.leaseExpiry.Store(0)
+	paused, err := e.controller.Request(waitCtx, agentID, agentv1.CapabilityRuntimeInfo, map[string]any{}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.controller.Await(waitCtx, paused, agentv1.StatusSucceeded); err != nil {
+		t.Fatalf("command nak'ed during lease expiry was not redelivered: %v", err)
 	}
 }
