@@ -21,7 +21,7 @@ leases, authorization, scheduling and operation state.
 - Agent CI, binary releases, container image and systemd packaging are owned by
   the agent repository.
 - The agent must not import controller `internal/` packages.
-- Cross-repository communication uses `machinarchy-protocol`.
+- Cross-repository communication uses the contract in `protocol/agentv1` (see ADR-0002).
 - Compatibility tests and a coordinated rollout policy are required.
 - Repository separation does not, by itself, provide runtime isolation or
   eliminate the need for secure NATS credentials and subject ACLs.

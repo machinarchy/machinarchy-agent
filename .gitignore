@@ -20,7 +20,7 @@
 /identity.json
 /identity.json.*
 
-# Workspace files are local when developing alongside machinarchy-protocol
+# Local Go workspace files
 go.work
 go.work.sum
 

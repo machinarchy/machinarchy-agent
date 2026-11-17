@@ -29,21 +29,26 @@ container because `/` is the container overlay, not the host root filesystem.
 Use Docker Engine on a Linux host and Docker Compose v2.15.1 or newer (the
 `uts: host` Compose option is required for host hostname reporting).
 
-Prepare a protected `.env` file and NATS credentials file:
+Prepare a protected `.env` file and the secrets directory:
 
 ```bash
-cp .env.docker.example .env
+cat > .env <<'ENV'
+MACHINARCHY_AGENT_NATS_URL=tls://nats.example.internal:4222
+MACHINARCHY_AGENT_CONTROLLER_PUBLIC_KEY=<base64 controller key>
+MACHINARCHY_AGENT_ENROLLMENT_TOKEN_FILE=/run/secrets/enrollment.token
+ENV
 chmod 600 .env
 mkdir -p secrets
 install -o 10001 -g 10001 -m 0600 /path/to/nats.creds secrets/nats.creds
+install -o 10001 -g 10001 -m 0600 /path/to/enrollment.token secrets/enrollment.token
 ```
 
-The default Compose profile mounts the credentials file read-only at
-`/run/secrets/nats.creds`; its owner must be UID 10001 and its mode must be
-`0600` to satisfy Agent validation. Fill in the NATS endpoint and one-time
-enrollment token. Remove the enrollment token from `.env` and recreate the
-container after registration. Ensure the NATS endpoint is reachable from the
-container network. Do not use
+The default Compose profile mounts `./secrets` read-only at `/run/secrets`.
+Secret files must be owned by UID 10001 with mode `0600`. After the logs show
+`agent registered`, delete `secrets/enrollment.token`, remove
+`MACHINARCHY_AGENT_ENROLLMENT_TOKEN_FILE` from `.env` and recreate the
+container. The identity is kept in the `machinarchy-agent-state` volume. Make
+sure the NATS endpoint is reachable from the container network. Do not use
 `127.0.0.1` for a NATS server running on the Docker host; inside the container,
 that address refers to the container itself.
 
@@ -58,14 +63,6 @@ To build locally, build the image first and then point Compose at it:
 ```bash
 docker build -t machinarchy-agent:local .
 MACHINARCHY_AGENT_IMAGE=machinarchy-agent:local docker compose -f compose.yaml up -d
-```
-
-When the shared protocol module is private, pass a read-only token using a
-BuildKit secret rather than a build argument:
-
-```bash
-docker build --secret id=protocol_token,env=MACHINARCHY_PROTOCOL_READ_TOKEN \
-  -t machinarchy-agent:local .
 ```
 
 Inspect logs:
@@ -180,6 +177,5 @@ package, but does not run the systemd daemon. The Agent uses the mounted host
 system bus for optional service operations.
 
 GitHub Actions publishes Linux `amd64` and `arm64` images. For local builds,
-use the Dockerfile commands above; Compose intentionally consumes an image
-rather than building it so private protocol credentials are never implicitly
-passed into a build.
+use the Dockerfile commands above. The build needs only public modules
+(verified against `go.sum`) and copies only `cmd/`, `internal/` and `protocol/`.

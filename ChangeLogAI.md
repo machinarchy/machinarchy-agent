@@ -1,5 +1,38 @@
 # AI Change Log
 
+## 2026-11-17 — Audit Phase 4: make the agent build, secure and testable
+
+### Changed
+
+- Removed every package that depended on the non-existent
+  `github.com/machinarchy/machinarchy-protocol` module, the in-repo stub of
+  `nats.go`, and `scripts/verify-agent-isolated.sh`.
+- Added `protocol/agentv1`, a standard-library-only, Ed25519-signed and
+  versioned wire contract with golden fixtures.
+- Rewrote the runtime as `internal/{state,dispatch,app,config}`. Capabilities
+  are decoupled from config. Added `internal/fakecontroller` as a reference
+  controller.
+- Hardened service control (local verb allowlist, `--`, `--no-ask-password`)
+  and fixed a facts compile failure on linux/arm and ppc64le.
+- Updated Dockerfile, compose files, systemd unit and env templates, Makefile,
+  CI, release and docker workflows, and docs. Deleted stale phase and history
+  docs.
+
+### Verification
+
+- `go build ./...`, `go vet ./...` (host, linux/amd64, linux/arm64),
+  `go mod verify`, `go mod tidy -diff`.
+- `go test -race -count=3 -shuffle=on ./...`, including integration tests
+  against an embedded nats-server.
+- `golangci-lint run` (strict config): 0 issues. `gosec`: 0 issues.
+- `govulncheck` with go1.27.4: no reachable vulnerabilities.
+- `make deployment-check` passed. systemd-analyze is unavailable on the review
+  host, so that step was skipped.
+- `docker build` succeeded. The image runs as 10001:10001, and `--version` /
+  `--check-config` were smoke-tested.
+- Not verified: a live machinarchy controller (it does not implement the
+  protocol yet), real systemd/polkit, and a production NATS ACL setup.
+
 ## 2026-11-16 — Split the Agent catch-all package by responsibility
 
 ### Changed

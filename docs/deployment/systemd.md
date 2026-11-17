@@ -1,7 +1,5 @@
 # Native Linux binary deployment (systemd)
 
-See also the [Phase 2 implementation record](../operations/phase2-native-binary-deployment.md).
-
 The supported native deployment is a Linux AMD64 or ARM64 binary managed by
 systemd. The release archive contains the binary, systemd unit, environment
 file template, installer, uninstaller, rollback helper and this guide.
@@ -68,24 +66,27 @@ Edit the production environment file:
 sudoedit /etc/machinarchy-agent/agent.env
 ```
 
-At minimum, configure a production TLS NATS endpoint and the authentication
-method required by your deployment. For example:
+At minimum, configure a TLS NATS endpoint, one authentication method, the
+controller's public key, and the one-time enrollment token. See
+[configuration.md](../configuration.md) for every setting. For example:
 
 ```bash
-MACHINARCHY_ENVIRONMENT=production
-MACHINARCHY_LOG_LEVEL=info
 MACHINARCHY_AGENT_NATS_URL=tls://nats.example.internal:4222
 MACHINARCHY_AGENT_NATS_CREDENTIALS_FILE=/etc/machinarchy-agent/agent.creds
-MACHINARCHY_AGENT_STATE_FILE=/var/lib/machinarchy-agent/identity.json
+MACHINARCHY_AGENT_CONTROLLER_PUBLIC_KEY_FILE=/etc/machinarchy-agent/controller.pub
+MACHINARCHY_AGENT_ENROLLMENT_TOKEN_FILE=/etc/machinarchy-agent/enrollment.token
 ```
+
+The unit already sets `MACHINARCHY_ENVIRONMENT=production` and
+`MACHINARCHY_AGENT_STATE_FILE=/var/lib/machinarchy-agent/state.json`.
 
 Protect credentials so only the Agent account can read them:
 
 ```bash
 sudo chown root:machagent /etc/machinarchy-agent/agent.env
 sudo chmod 0640 /etc/machinarchy-agent/agent.env
-sudo chown machagent:machagent /etc/machinarchy-agent/agent.creds
-sudo chmod 0600 /etc/machinarchy-agent/agent.creds
+sudo chown machagent:machagent /etc/machinarchy-agent/agent.creds /etc/machinarchy-agent/enrollment.token
+sudo chmod 0600 /etc/machinarchy-agent/agent.creds /etc/machinarchy-agent/enrollment.token
 ```
 
 The installer deliberately does not enable or start the service. Validate the
@@ -112,9 +113,11 @@ sudo systemctl status machinarchy-agent
 sudo journalctl -u machinarchy-agent -f
 ```
 
-After successful enrollment, remove the one-time enrollment token from the
-environment file and restart the service. The controller-issued identity and
-lease token remain in the protected state file.
+After the log shows `agent registered`, delete the enrollment token file and
+its setting. The agent key and the controller-assigned identity remain in the
+protected state file (`/var/lib/machinarchy-agent/state.json`). If the
+controller revokes the agent, the agent deletes its identity and exits; it then
+needs a new enrollment token.
 
 ## 4. Upgrade and rollback
 

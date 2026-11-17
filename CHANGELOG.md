@@ -5,6 +5,30 @@ notes and file-level details belong in `ChangeLogAI.md`.
 
 ## Unreleased
 
+### Breaking: protocol v1 and runtime rewrite (audit/agent-fix)
+
+- The agent now builds. The non-existent `machinarchy-protocol` dependency was
+  replaced by the in-repository, standard-library-only `protocol/agentv1`
+  contract.
+- All messages are Ed25519-signed. Agents pin the controller key
+  (`MACHINARCHY_AGENT_CONTROLLER_PUBLIC_KEY[_FILE]`, required) and enroll with
+  proof of possession of their own key. Lease renewal no longer uses a bearer
+  token.
+- Subjects moved to `machinarchy-agent.v1.*`. The command stream is
+  `MACHINARCHY_AGENT_COMMANDS` with consumer `agent-<id>`.
+- State is one file, `MACHINARCHY_AGENT_STATE_FILE` (default
+  `/var/lib/machinarchy-agent/state.json`). Previous identity, event and
+  operation files are not migrated; agents must re-enroll.
+- `MACHINARCHY_ENVIRONMENT` now defaults to `production` (TLS and auth
+  required). New settings: NATS CA, client certificate and key, enrollment
+  token file, `MACHINARCHY_AGENT_SHUTDOWN_TIMEOUT`. Removed settings now cause
+  a startup error.
+- `service.control` accepts only start, stop and restart locally, and calls
+  `systemctl --no-ask-password -- <verb> <unit>`.
+- `system.facts` output was renamed to the protocol v1 schema. The kernel
+  version is read from `/proc/sys/kernel/osrelease`.
+- Added `--public-key`. `--version` now shows the protocol version.
+
 - Added Linux Docker Engine deployment for AMD64 and ARM64 with a non-root,
   read-only, capability-dropped default profile and persistent Agent state.
 - Added host OS facts integration without a host-root mount and omitted the
@@ -30,7 +54,7 @@ notes and file-level details belong in `ChangeLogAI.md`.
   cancellation, and a minimal child environment that excludes Agent secrets.
 - Added shared `services/v1` contracts (protocol module v0.2.3).
 
-- Moved the `system.facts` DTOs into the shared `machinarchy-protocol/hostfacts/v1`
+- (Superseded) Moved the `system.facts` DTOs into the shared `machinarchy-protocol/hostfacts/v1`
   module and validate collected facts against that contract before publishing.
 
 - Added the read-only `system.facts` capability for host inventory refresh.
@@ -64,4 +88,4 @@ notes and file-level details belong in `ChangeLogAI.md`.
 
 - Extracted the agent runtime into an independent Go module.
 - Added standalone build, test, container and systemd deployment scaffolding.
-- Moved versioned wire contracts to the separate `machinarchy-protocol` module.
+- (Superseded) Moved versioned wire contracts to a separate `machinarchy-protocol` module that was never published.
