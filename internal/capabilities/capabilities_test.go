@@ -253,3 +253,17 @@ func TestSystemctlFailuresAreBounded(t *testing.T) {
 		}
 	}
 }
+
+func TestSystemctlEnvironment(t *testing.T) {
+	env := systemctlEnv("unix:path=/run/dbus/system_bus_socket")
+	if env[len(env)-1] != "DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket" {
+		t.Fatalf("bus address not passed: %v", env)
+	}
+	for _, bad := range []string{"", "tcp:host=evil,port=1", "unix:path=/x;unix:path=/y", "unix:abstract=x"} {
+		for _, entry := range systemctlEnv(bad) {
+			if strings.HasPrefix(entry, "DBUS_SYSTEM_BUS_ADDRESS=") {
+				t.Errorf("bus address %q passed through", bad)
+			}
+		}
+	}
+}

@@ -120,7 +120,7 @@ func (s *systemctl) run(ctx context.Context, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, s.path, args...) // #nosec G204 -- fixed binary; args are validated unit names and fixed verbs.
 	stdout := &boundedBuffer{limit: maxSystemctlOutput}
 	cmd.Stdout, cmd.Stderr = stdout, &boundedBuffer{limit: 1024}
-	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C", "SYSTEMD_PAGER=", "SYSTEMD_COLORS=0"}
+	cmd.Env = systemctlEnv(os.Getenv("DBUS_SYSTEM_BUS_ADDRESS"))
 	cmd.Dir = "/"
 	if err := cmd.Run(); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -136,6 +136,17 @@ func (s *systemctl) run(ctx context.Context, args ...string) (string, error) {
 		return "", errors.New("systemctl output exceeded its limit")
 	}
 	return stdout.String(), nil
+}
+
+// systemctlEnv is the complete environment for systemctl: nothing from the
+// agent (which may hold NATS credentials) is inherited except a validated
+// system bus address, which containers set to the host's mounted socket.
+func systemctlEnv(busAddress string) []string {
+	env := []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C", "SYSTEMD_PAGER=", "SYSTEMD_COLORS=0"}
+	if strings.HasPrefix(busAddress, "unix:path=/") && !strings.ContainsAny(busAddress, ";,\r\n\x00") {
+		env = append(env, "DBUS_SYSTEM_BUS_ADDRESS="+busAddress)
+	}
+	return env
 }
 
 // Status reads unit properties. "--" ends option parsing, so a unit name can
