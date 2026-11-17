@@ -33,6 +33,17 @@
 - Not verified: a live machinarchy controller (it does not implement the
   protocol yet), real systemd/polkit, and a production NATS ACL setup.
 
+### Follow-up fixes found by repeated test runs
+
+- `internal/app`: commands are consumed only after the dispatcher is ready.
+  Previously a restarted agent nak'ed its first command while recovering.
+- `internal/app` tests: synchronize on a full round trip before restarting,
+  and add a lease-expired nak/redelivery test. Logs are available via
+  `AGENT_TEST_LOG=1`.
+- Bumped `golang.org/x/crypto` to v0.59.0 (GO-2026-5932, not reachable).
+- Final verification: `go test -race -count=5 -shuffle=on ./...` passed,
+  `make check` passed, and `govulncheck` reported no vulnerabilities.
+
 ## 2026-11-16 — Split the Agent catch-all package by responsibility
 
 ### Changed
