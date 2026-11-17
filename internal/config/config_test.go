@@ -1,318 +1,163 @@
 package config
 
 import (
+	"crypto/ed25519"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	agentv1 "github.com/machinarchy/machinarchy-protocol/agent/v1"
+	"github.com/machinarchy/machinarchy-agent/protocol/agentv1"
 )
 
-func clearAgentEnv(t *testing.T) {
+var controllerKey = agentv1.EncodePublicKey(ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)).Public().(ed25519.PublicKey))
+
+func env(values map[string]string) func(string) string {
+	return func(key string) string { return values[key] }
+}
+
+func devEnv(extra map[string]string) func(string) string {
+	values := map[string]string{
+		EnvEnvironment:         Development,
+		EnvNATSURL:             "nats://127.0.0.1:4222",
+		EnvControllerPublicKey: controllerKey,
+	}
+	for k, v := range extra {
+		values[k] = v
+	}
+	return env(values)
+}
+
+func writeFile(t *testing.T, content string, mode os.FileMode) string {
 	t.Helper()
-	keys := []string{
-		envAgentNATSURL, envEventBrokerURL, envNATSURL, envAgentName, envEnvironment, "MACHINARCHY_LOG_LEVEL",
-		envNATSCredentialsFile, envNATSToken, envNATSUsername, envNATSPassword,
-		envConnectTimeout, envStartupTimeout, envReconnectWait, envReconnectJitter, envDrainTimeout,
-		envAgentStateFile, envAgentEnrollmentToken, envAgentVersion, envRegisterSubject, envLeaseRenewSubject, envRequestTimeout, envEventBufferSize, envJetStreamStream, envEventNakDelay,
-		envOperationWorkers, envOperationQueueSize, envOperationTimeout, envOperationInputLimit, envOperationOutputLimit, envResultPublishTimeout, envRemovedExecutionEnabled,
-		envServiceManagementEnabled, envServiceControlEnabled, envServiceAllowlist, envSystemctlPath,
-	}
-	for _, key := range keys {
-		t.Setenv(key, "")
-	}
-}
-
-func TestLoadConfigDefaults(t *testing.T) {
-	clearAgentEnv(t)
-	t.Setenv(envAgentNATSURL, "nats://127.0.0.1:4222")
-
-	cfg, err := LoadConfig()
-	if err != nil {
-		t.Fatalf("LoadConfig() error = %v", err)
-	}
-	if cfg.ClientName != "machinarchy-agent" {
-		t.Fatalf("ClientName = %q, want %q", cfg.ClientName, "machinarchy-agent")
-	}
-	if cfg.ConnectTimeout != 5*time.Second || cfg.StartupTimeout != 30*time.Second {
-		t.Fatalf("unexpected timeout defaults: connect=%s startup=%s", cfg.ConnectTimeout, cfg.StartupTimeout)
-	}
-	if cfg.RegistrationSubject != "machinarchy.v1.agent.register" || cfg.LeaseRenewSubject != "machinarchy.v1.agent.lease.renew" {
-		t.Fatalf("unexpected control-plane subjects: register=%q renew=%q", cfg.RegistrationSubject, cfg.LeaseRenewSubject)
-	}
-	if cfg.EventBufferSize != defaultEventBufferSize {
-		t.Fatalf("EventBufferSize = %d, want %d", cfg.EventBufferSize, defaultEventBufferSize)
-	}
-	if cfg.JetStreamStream != agentv1.AgentEventsStreamName || cfg.EventNakDelay != 5*time.Second {
-		t.Fatalf("unexpected durable delivery defaults: stream=%q nak_delay=%s", cfg.JetStreamStream, cfg.EventNakDelay)
-	}
-	if cfg.ServiceManagementEnabled || cfg.ServiceControlEnabled || len(cfg.AllowedServices) != 0 {
-		t.Fatal("service management must be disabled by default")
-	}
-	if cfg.OperationWorkers != defaultOperationWorkers || cfg.OperationQueueSize != defaultOperationQueue {
-		t.Fatalf("unexpected operation defaults: workers=%d queue=%d", cfg.OperationWorkers, cfg.OperationQueueSize)
-	}
-	if cfg.IdentityFile != "./data/agent/identity.json" {
-		t.Fatalf("IdentityFile = %q", cfg.IdentityFile)
-	}
-}
-
-func TestLoadConfigRejectsRemovedGenericExecutionOptIn(t *testing.T) {
-	clearAgentEnv(t)
-	t.Setenv(envAgentNATSURL, "nats://127.0.0.1:4222")
-	t.Setenv(envRemovedExecutionEnabled, "true")
-	if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), "structured OS capabilities only") {
-		t.Fatalf("LoadConfig() error = %v, want explicit removed-capability error", err)
-	}
-}
-
-func TestLoadConfigEnablesServiceManagementOnlyWithExplicitAllowlist(t *testing.T) {
-	clearAgentEnv(t)
-	t.Setenv(envAgentNATSURL, "nats://127.0.0.1:4222")
-	t.Setenv(envServiceManagementEnabled, "true")
-	t.Setenv(envServiceAllowlist, "nginx.service,ssh.service")
-
-	cfg, err := LoadConfig()
-	if err != nil {
-		t.Fatalf("LoadConfig() error = %v", err)
-	}
-	if !cfg.ServiceManagementEnabled || cfg.ServiceControlEnabled {
-		t.Fatalf("unexpected service management policy: enabled=%v control=%v", cfg.ServiceManagementEnabled, cfg.ServiceControlEnabled)
-	}
-	if got := strings.Join(cfg.AllowedServices, ","); got != "nginx.service,ssh.service" {
-		t.Fatalf("AllowedServices = %q", got)
-	}
-}
-
-func TestLoadConfigCanEnableServiceControlSeparately(t *testing.T) {
-	clearAgentEnv(t)
-	t.Setenv(envAgentNATSURL, "nats://127.0.0.1:4222")
-	t.Setenv(envServiceManagementEnabled, "true")
-	t.Setenv(envServiceControlEnabled, "true")
-	t.Setenv(envServiceAllowlist, "nginx.service")
-
-	cfg, err := LoadConfig()
-	if err != nil {
-		t.Fatalf("LoadConfig() error = %v", err)
-	}
-	if !cfg.ServiceManagementEnabled || !cfg.ServiceControlEnabled {
-		t.Fatal("service status and control should be enabled")
-	}
-}
-
-func TestConfigRejectsUnsafeServiceManagementPolicy(t *testing.T) {
-	tests := []struct {
-		name   string
-		mutate func(*Config)
-	}{
-		{name: "control without management", mutate: func(c *Config) { c.ServiceControlEnabled = true }},
-		{name: "no allowlist", mutate: func(c *Config) { c.ServiceManagementEnabled = true }},
-		{name: "invalid unit", mutate: func(c *Config) { c.ServiceManagementEnabled = true; c.AllowedServices = []string{"../nginx.service"} }},
-		{name: "duplicate unit", mutate: func(c *Config) {
-			c.ServiceManagementEnabled = true
-			c.AllowedServices = []string{"nginx.service", "nginx.service"}
-		}},
-		{name: "relative systemctl", mutate: func(c *Config) {
-			c.ServiceManagementEnabled = true
-			c.AllowedServices = []string{"nginx.service"}
-			c.SystemctlPath = "systemctl"
-		}},
-		{name: "allowlist while disabled", mutate: func(c *Config) { c.AllowedServices = []string{"nginx.service"} }},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			cfg := validTestConfig()
-			test.mutate(&cfg)
-			if err := cfg.Validate(); err == nil {
-				t.Fatal("Validate() succeeded for unsafe service policy")
-			}
-		})
-	}
-}
-
-func TestLoadConfigUsesEventBrokerURLFallback(t *testing.T) {
-	clearAgentEnv(t)
-	t.Setenv(envEventBrokerURL, "tls://broker.example:4222")
-	t.Setenv(envEnvironment, "production")
-	t.Setenv(envNATSToken, "test-token")
-
-	cfg, err := LoadConfig()
-	if err != nil {
-		t.Fatalf("LoadConfig() error = %v", err)
-	}
-	if cfg.BrokerURLs != "tls://broker.example:4222" {
-		t.Fatalf("BrokerURLs = %q", cfg.BrokerURLs)
-	}
-}
-
-func TestConfigRejectsPlaintextBrokerInProduction(t *testing.T) {
-	cfg := validTestConfig()
-	cfg.Environment = "production"
-	cfg.BrokerURLs = "nats://broker.example:4222"
-	cfg.Token = "token"
-
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("Validate() succeeded; want TLS validation error")
-	}
-}
-
-func TestConfigRejectsConflictingAuthenticationMethods(t *testing.T) {
-	cfg := validTestConfig()
-	cfg.Token = "token"
-	cfg.Username = "agent"
-	cfg.Password = "password"
-
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("Validate() succeeded; want conflicting authentication error")
-	}
-}
-
-func TestConfigRequiresPrivateCredentialsFile(t *testing.T) {
-	cfg := validTestConfig()
-	path := filepath.Join(t.TempDir(), "agent.creds")
-	if err := os.WriteFile(path, []byte("placeholder credentials"), 0o644); err != nil {
+	path := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(path, []byte(content), mode); err != nil {
 		t.Fatal(err)
 	}
-	cfg.CredentialsFile = path
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("Validate() succeeded; want permissions error")
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Validate() with mode 0600 error = %v", err)
-	}
+	return path
 }
 
-func TestConfigRejectsInvalidLogLevel(t *testing.T) {
-	cfg := validTestConfig()
-	cfg.LogLevel = "verbose"
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("Validate() succeeded; want log level validation error")
-	}
-}
-
-func TestConfigRejectsURLCredentials(t *testing.T) {
-	cfg := validTestConfig()
-	cfg.BrokerURLs = "nats://agent:password@broker.example:4222"
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("Validate() succeeded; want URL userinfo rejection")
-	}
-}
-
-func validTestConfig() Config {
-	return Config{
-		Environment:             "test",
-		LogLevel:                "info",
-		ClientName:              "machinarchy-agent-test",
-		BrokerURLs:              "nats://127.0.0.1:4222",
-		ConnectTimeout:          time.Second,
-		StartupTimeout:          time.Second,
-		ReconnectWait:           time.Second,
-		DrainTimeout:            time.Second,
-		RequestTimeout:          time.Second,
-		EventBufferSize:         defaultEventBufferSize,
-		JetStreamStream:         agentv1.AgentEventsStreamName,
-		EventNakDelay:           5 * time.Second,
-		OperationWorkers:        defaultOperationWorkers,
-		OperationQueueSize:      defaultOperationQueue,
-		MaxOperationTimeout:     5 * time.Minute,
-		MaxOperationInputBytes:  maxOperationInputBytes,
-		MaxOperationOutputBytes: maxOperationOutputBytes,
-		ResultPublishTimeout:    5 * time.Second,
-		IdentityFile:            "./data/agent/identity.json",
-		AgentVersion:            "test",
-		RegistrationSubject:     "machinarchy.v1.agent.register",
-		LeaseRenewSubject:       "machinarchy.v1.agent.lease.renew",
-	}
-}
-
-func TestConfigRejectsOperationStorePathCollisionWithEventLedger(t *testing.T) {
-	cfg := validTestConfig()
-	cfg.OperationStoreFile = strings.Join([]string{filepath.Dir(cfg.IdentityFile), "nested", "..", filepath.Base(cfg.IdentityFile) + ".events.json"}, string(os.PathSeparator))
-
-	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "operation store and event ledger") {
-		t.Fatalf("Validate() error = %v, want event-ledger path collision error", err)
-	}
-}
-
-func TestConfigRejectsWildcardControlPlaneSubject(t *testing.T) {
-	cfg := validTestConfig()
-	cfg.RegistrationSubject = "machinarchy.v1.agent.*"
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("Validate() succeeded; want wildcard subject rejection")
-	}
-}
-
-func TestLoadConfigUsesExplicitAgentStateFile(t *testing.T) {
-	clearAgentEnv(t)
-	t.Setenv(envAgentNATSURL, "nats://127.0.0.1:4222")
-	stateFile := filepath.Join(t.TempDir(), "custom", "identity.json")
-	t.Setenv(envAgentStateFile, stateFile)
-	cfg, err := LoadConfig()
+func TestLoadDefaults(t *testing.T) {
+	cfg, err := Load(devEnv(nil))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Load() error = %v", err)
 	}
-	if cfg.IdentityFile != stateFile {
-		t.Fatalf("IdentityFile = %q, want %q", cfg.IdentityFile, stateFile)
+	if cfg.Workers != 4 || cfg.QueueSize != 32 || cfg.MaxOutputBytes != DefaultOutputSize ||
+		cfg.MaxOperationTimeout != 5*time.Minute || cfg.ShutdownTimeout != 20*time.Second {
+		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
-}
-
-func TestConfigRejectsInvalidEventBufferSize(t *testing.T) {
-	cfg := validTestConfig()
-	cfg.EventBufferSize = maxEventBufferSize + 1
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("Validate() succeeded; want event buffer size validation error")
+	if !filepath.IsAbs(cfg.StateFile) || !strings.HasSuffix(cfg.StateFile, filepath.Join("data", "agent", "state.json")) {
+		t.Fatalf("StateFile = %q", cfg.StateFile)
 	}
-}
-
-func TestConfigRejectsGreaterThanInSubject(t *testing.T) {
-	cfg := validTestConfig()
-	cfg.RegistrationSubject = "machinarchy.v1.>"
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("Validate() succeeded; want wildcard subject rejection")
+	if cfg.ServiceEnabled {
+		t.Fatal("service management enabled by default")
 	}
 }
 
-func TestConfigRejectsUnsafeOperationLimits(t *testing.T) {
-	tests := []struct {
-		name   string
-		mutate func(*Config)
-	}{
-		{name: "too many workers", mutate: func(c *Config) { c.OperationWorkers = maxOperationWorkers + 1 }},
-		{name: "queue too large", mutate: func(c *Config) { c.OperationQueueSize = maxOperationQueue + 1 }},
-		{name: "timeout too long", mutate: func(c *Config) { c.MaxOperationTimeout = maxOperationTimeout + time.Second }},
-		{name: "input limit too large", mutate: func(c *Config) { c.MaxOperationInputBytes = maxOperationInputBytes + 1 }},
-		{name: "output limit too large", mutate: func(c *Config) { c.MaxOperationOutputBytes = maxOperationOutputBytes + 1 }},
-		{name: "result timeout missing", mutate: func(c *Config) { c.ResultPublishTimeout = 0 }},
+func TestDefaultEnvironmentIsProductionAndEnforcesTLSAndAuth(t *testing.T) {
+	base := map[string]string{EnvNATSURL: "nats://broker:4222", EnvControllerPublicKey: controllerKey}
+	if _, err := Load(env(base)); err == nil || !strings.Contains(err.Error(), "tls://") {
+		t.Fatalf("plaintext NATS accepted by default environment: %v", err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := validTestConfig()
-			tt.mutate(&cfg)
-			if err := cfg.Validate(); err == nil {
-				t.Fatal("Validate() succeeded for unsafe operation limits")
-			}
-		})
+	base[EnvNATSURL] = "tls://broker:4222"
+	if _, err := Load(env(base)); err == nil || !strings.Contains(err.Error(), "authentication") {
+		t.Fatalf("unauthenticated production config accepted: %v", err)
+	}
+	base[EnvNATSCredentialsFile] = writeFile(t, "creds", 0o600)
+	cfg, err := Load(env(base))
+	if err != nil {
+		t.Fatalf("valid production config rejected: %v", err)
+	}
+	if cfg.Environment != Production || cfg.StateFile != "/var/lib/machinarchy-agent/state.json" {
+		t.Fatalf("unexpected production defaults: %+v", cfg)
 	}
 }
 
-func TestConfigRejectsInvalidJetStreamConfiguration(t *testing.T) {
-	t.Run("invalid stream name", func(t *testing.T) {
-		cfg := validTestConfig()
-		cfg.JetStreamStream = "MACHINARCHY.AGENT.EVENTS"
-		if err := cfg.Validate(); err == nil {
-			t.Fatal("Validate() succeeded; want invalid JetStream stream name error")
+func TestControllerKeyIsRequired(t *testing.T) {
+	values := map[string]string{EnvEnvironment: Development, EnvNATSURL: "nats://h:1"}
+	if _, err := Load(env(values)); err == nil {
+		t.Fatal("missing controller key accepted")
+	}
+	values[EnvControllerPublicKey] = "not-a-key"
+	if _, err := Load(env(values)); err == nil {
+		t.Fatal("malformed controller key accepted")
+	}
+	values[EnvControllerPublicKey] = ""
+	values[EnvControllerPublicKeyFile] = writeFile(t, controllerKey+"\n", 0o644)
+	if _, err := Load(env(values)); err != nil {
+		t.Fatalf("controller key file rejected: %v", err)
+	}
+}
+
+func TestEnrollmentTokenFromFileMustBePrivate(t *testing.T) {
+	token := strings.Repeat("e", 40)
+	if _, err := Load(devEnv(map[string]string{EnvEnrollmentTokenFile: writeFile(t, token, 0o644)})); err == nil {
+		t.Fatal("world-readable enrollment token file accepted")
+	}
+	cfg, err := Load(devEnv(map[string]string{EnvEnrollmentTokenFile: writeFile(t, token+"\n", 0o600)}))
+	if err != nil || cfg.EnrollmentToken != token {
+		t.Fatalf("Load() = %q, %v", cfg.EnrollmentToken, err)
+	}
+	if _, err := Load(devEnv(map[string]string{EnvEnrollmentToken: "short"})); err == nil {
+		t.Fatal("short enrollment token accepted")
+	}
+	if _, err := Load(devEnv(map[string]string{EnvEnrollmentToken: token, EnvEnrollmentTokenFile: "/x"})); err == nil {
+		t.Fatal("both token value and file accepted")
+	}
+}
+
+func TestRejectsInvalidSettings(t *testing.T) {
+	cases := map[string]map[string]string{
+		"removed setting":       {"MACHINARCHY_AGENT_JETSTREAM_STREAM": "X"},
+		"bad environment":       {EnvEnvironment: "staging"},
+		"bad url scheme":        {EnvNATSURL: "http://h:1"},
+		"url with credentials":  {EnvNATSURL: "nats://user:pw@h:1"},
+		"two auth methods":      {EnvNATSToken: "t", EnvNATSUsername: "u", EnvNATSPassword: "p"},
+		"username only":         {EnvNATSUsername: "u"},
+		"cert without key":      {EnvNATSCertFile: "/x"},
+		"bad duration":          {EnvRequestTimeout: "forever"},
+		"duration too long":     {EnvShutdownTimeout: "1h"},
+		"zero workers":          {EnvOperationWorkers: "0"},
+		"workers over queue":    {EnvOperationWorkers: "8", EnvOperationQueueSize: "4"},
+		"output above protocol": {EnvOperationMaxOutput: "999999999"},
+		"control without mgmt":  {EnvServiceControl: "true"},
+		"mgmt without list":     {EnvServiceManagement: "true"},
+		"list without mgmt":     {EnvServiceAllowlist: "nginx.service"},
+		"bad unit":              {EnvServiceManagement: "true", EnvServiceAllowlist: "nginx.socket"},
+		"bad log level":         {EnvLogLevel: "trace"},
+		"multiline name":        {EnvAgentName: "a\nb"},
+	}
+	for name, extra := range cases {
+		if _, err := Load(devEnv(extra)); err == nil {
+			t.Errorf("%s: Load() succeeded", name)
 		}
-	})
-	t.Run("invalid nak delay", func(t *testing.T) {
-		cfg := validTestConfig()
-		cfg.EventNakDelay = 0
-		if err := cfg.Validate(); err == nil {
-			t.Fatal("Validate() succeeded; want invalid event NAK delay error")
-		}
-	})
+	}
+}
+
+func TestPrivateFileChecks(t *testing.T) {
+	if _, err := Load(devEnv(map[string]string{EnvNATSCredentialsFile: writeFile(t, "c", 0o644)})); err == nil {
+		t.Fatal("world-readable credentials file accepted")
+	}
+	target := writeFile(t, "c", 0o600)
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skip(err)
+	}
+	if _, err := Load(devEnv(map[string]string{EnvNATSCredentialsFile: link})); err == nil {
+		t.Fatal("symlinked credentials file accepted")
+	}
+}
+
+func TestServiceSettings(t *testing.T) {
+	cfg, err := Load(devEnv(map[string]string{
+		EnvServiceManagement: "true", EnvServiceControl: "true",
+		EnvServiceAllowlist: "nginx.service, ssh.service", EnvSystemctlPath: "/bin/systemctl",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ServiceEnabled || !cfg.Services.ControlEnabled || len(cfg.Services.Allowed) != 2 || cfg.Services.SystemctlPath != "/bin/systemctl" {
+		t.Fatalf("service settings = %+v", cfg.Services)
+	}
 }

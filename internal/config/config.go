@@ -1,9 +1,12 @@
-// Package config loads and validates process-local Agent configuration.
+// Package config loads and validates the agent's process configuration from
+// environment variables. It never logs or returns secret values in errors.
 package config
 
 import (
+	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -11,558 +14,391 @@ import (
 	"strings"
 	"time"
 
-	"github.com/machinarchy/machinarchy-protocol/agent/v1"
-	servicesv1 "github.com/machinarchy/machinarchy-protocol/services/v1"
+	"github.com/machinarchy/machinarchy-agent/internal/capabilities"
+	"github.com/machinarchy/machinarchy-agent/protocol/agentv1"
 )
 
+// Environment variable names.
 const (
-	MaxAllowedServices      = 64
-	DefaultEventBufferSize  = 64
-	DefaultOperationWorkers = 4
-	DefaultOperationQueue   = 64
-	MaxOperationWorkers     = 64
-	MaxOperationQueue       = 4096
-	MaxOperationInputBytes  = 64 * 1024
-	MaxOperationOutputBytes = 256 * 1024
-	MaxOperationTimeout     = time.Hour
-
-	maxAllowedServices          = MaxAllowedServices
-	defaultEventBufferSize      = DefaultEventBufferSize
-	defaultOperationWorkers     = DefaultOperationWorkers
-	defaultOperationQueue       = DefaultOperationQueue
-	maxOperationWorkers         = MaxOperationWorkers
-	maxOperationQueue           = MaxOperationQueue
-	maxOperationInputBytes      = MaxOperationInputBytes
-	maxOperationOutputBytes     = MaxOperationOutputBytes
-	maxOperationTimeout         = MaxOperationTimeout
-	envAgentNATSURL             = "MACHINARCHY_AGENT_NATS_URL"
-	envEventBrokerURL           = "MACHINARCHY_EVENT_BROKER_URL"
-	envNATSURL                  = "MACHINARCHY_NATS_URL"
-	envAgentName                = "MACHINARCHY_AGENT_NAME"
-	envEnvironment              = "MACHINARCHY_ENVIRONMENT"
-	envNATSCredentialsFile      = "MACHINARCHY_AGENT_NATS_CREDENTIALS_FILE"
-	envNATSToken                = "MACHINARCHY_AGENT_NATS_TOKEN"
-	envNATSUsername             = "MACHINARCHY_AGENT_NATS_USERNAME"
-	envNATSPassword             = "MACHINARCHY_AGENT_NATS_PASSWORD"
-	envConnectTimeout           = "MACHINARCHY_AGENT_CONNECT_TIMEOUT"
-	envStartupTimeout           = "MACHINARCHY_AGENT_STARTUP_TIMEOUT"
-	envReconnectWait            = "MACHINARCHY_AGENT_RECONNECT_WAIT"
-	envReconnectJitter          = "MACHINARCHY_AGENT_RECONNECT_JITTER"
-	envDrainTimeout             = "MACHINARCHY_AGENT_DRAIN_TIMEOUT"
-	envAgentStateFile           = "MACHINARCHY_AGENT_STATE_FILE"
-	envOperationStoreFile       = "MACHINARCHY_AGENT_OPERATION_STORE_FILE"
-	envAgentEnrollmentToken     = "MACHINARCHY_AGENT_ENROLLMENT_TOKEN"
-	envAgentVersion             = "MACHINARCHY_AGENT_VERSION"
-	envRegisterSubject          = "MACHINARCHY_AGENT_REGISTER_SUBJECT"
-	envLeaseRenewSubject        = "MACHINARCHY_AGENT_LEASE_RENEW_SUBJECT"
-	envRequestTimeout           = "MACHINARCHY_AGENT_REQUEST_TIMEOUT"
-	envEventBufferSize          = "MACHINARCHY_AGENT_EVENT_BUFFER_SIZE"
-	envJetStreamStream          = "MACHINARCHY_AGENT_JETSTREAM_STREAM"
-	envEventNakDelay            = "MACHINARCHY_AGENT_EVENT_NAK_DELAY"
-	envOperationWorkers         = "MACHINARCHY_AGENT_OPERATION_WORKERS"
-	envOperationQueueSize       = "MACHINARCHY_AGENT_OPERATION_QUEUE_SIZE"
-	envOperationTimeout         = "MACHINARCHY_AGENT_OPERATION_TIMEOUT"
-	envOperationInputLimit      = "MACHINARCHY_AGENT_OPERATION_MAX_INPUT_BYTES"
-	envOperationOutputLimit     = "MACHINARCHY_AGENT_OPERATION_MAX_OUTPUT_BYTES"
-	envResultPublishTimeout     = "MACHINARCHY_AGENT_RESULT_PUBLISH_TIMEOUT"
-	envRemovedExecutionEnabled  = "MACHINARCHY_AGENT_EXECUTION_ENABLED"
-	envServiceManagementEnabled = "MACHINARCHY_AGENT_SERVICE_MANAGEMENT_ENABLED"
-	envServiceControlEnabled    = "MACHINARCHY_AGENT_SERVICE_CONTROL_ENABLED"
-	envServiceAllowlist         = "MACHINARCHY_AGENT_SERVICE_ALLOWLIST"
-	envSystemctlPath            = "MACHINARCHY_AGENT_SYSTEMCTL_PATH"
+	EnvEnvironment             = "MACHINARCHY_ENVIRONMENT"
+	EnvLogLevel                = "MACHINARCHY_LOG_LEVEL"
+	EnvAgentName               = "MACHINARCHY_AGENT_NAME"
+	EnvNATSURL                 = "MACHINARCHY_AGENT_NATS_URL"
+	EnvNATSCredentialsFile     = "MACHINARCHY_AGENT_NATS_CREDENTIALS_FILE"
+	EnvNATSToken               = "MACHINARCHY_AGENT_NATS_TOKEN"
+	EnvNATSUsername            = "MACHINARCHY_AGENT_NATS_USERNAME"
+	EnvNATSPassword            = "MACHINARCHY_AGENT_NATS_PASSWORD"
+	EnvNATSCAFile              = "MACHINARCHY_AGENT_NATS_CA_FILE"
+	EnvNATSCertFile            = "MACHINARCHY_AGENT_NATS_CERT_FILE"
+	EnvNATSKeyFile             = "MACHINARCHY_AGENT_NATS_KEY_FILE"
+	EnvConnectTimeout          = "MACHINARCHY_AGENT_CONNECT_TIMEOUT"
+	EnvReconnectWait           = "MACHINARCHY_AGENT_RECONNECT_WAIT"
+	EnvRequestTimeout          = "MACHINARCHY_AGENT_REQUEST_TIMEOUT"
+	EnvDrainTimeout            = "MACHINARCHY_AGENT_DRAIN_TIMEOUT"
+	EnvShutdownTimeout         = "MACHINARCHY_AGENT_SHUTDOWN_TIMEOUT"
+	EnvStateFile               = "MACHINARCHY_AGENT_STATE_FILE"
+	EnvControllerPublicKey     = "MACHINARCHY_AGENT_CONTROLLER_PUBLIC_KEY"
+	EnvControllerPublicKeyFile = "MACHINARCHY_AGENT_CONTROLLER_PUBLIC_KEY_FILE"
+	EnvEnrollmentToken         = "MACHINARCHY_AGENT_ENROLLMENT_TOKEN"
+	EnvEnrollmentTokenFile     = "MACHINARCHY_AGENT_ENROLLMENT_TOKEN_FILE"
+	EnvOperationWorkers        = "MACHINARCHY_AGENT_OPERATION_WORKERS"
+	EnvOperationQueueSize      = "MACHINARCHY_AGENT_OPERATION_QUEUE_SIZE"
+	EnvOperationTimeout        = "MACHINARCHY_AGENT_OPERATION_TIMEOUT"
+	EnvOperationMaxOutput      = "MACHINARCHY_AGENT_OPERATION_MAX_OUTPUT_BYTES"
+	EnvServiceManagement       = "MACHINARCHY_AGENT_SERVICE_MANAGEMENT_ENABLED"
+	EnvServiceControl          = "MACHINARCHY_AGENT_SERVICE_CONTROL_ENABLED"
+	EnvServiceAllowlist        = "MACHINARCHY_AGENT_SERVICE_ALLOWLIST"
+	EnvSystemctlPath           = "MACHINARCHY_AGENT_SYSTEMCTL_PATH"
 )
 
-// Config contains process-local settings needed to establish the agent's
-// outbound NATS connection. It intentionally does not contain an agent ID:
-// agent identity must be assigned by the control plane, not self-asserted here.
-type Config struct {
-	Environment string
-	LogLevel    string
-	ClientName  string
-	BrokerURLs  string
+// removedSettings were accepted by earlier, non-functional builds. Failing on
+// them is safer than silently ignoring an operator's intent.
+var removedSettings = []string{
+	"MACHINARCHY_EVENT_BROKER_URL", "MACHINARCHY_NATS_URL", "MACHINARCHY_AGENT_VERSION",
+	"MACHINARCHY_AGENT_STARTUP_TIMEOUT", "MACHINARCHY_AGENT_RECONNECT_JITTER",
+	"MACHINARCHY_AGENT_REGISTER_SUBJECT", "MACHINARCHY_AGENT_LEASE_RENEW_SUBJECT",
+	"MACHINARCHY_AGENT_EVENT_BUFFER_SIZE", "MACHINARCHY_AGENT_JETSTREAM_STREAM",
+	"MACHINARCHY_AGENT_EVENT_NAK_DELAY", "MACHINARCHY_AGENT_OPERATION_MAX_INPUT_BYTES",
+	"MACHINARCHY_AGENT_RESULT_PUBLISH_TIMEOUT", "MACHINARCHY_AGENT_OPERATION_STORE_FILE",
+	"MACHINARCHY_AGENT_EXECUTION_ENABLED",
+}
 
+// Limits for operator-tunable values.
+const (
+	MaxWorkers        = 64
+	MaxQueueSize      = 256
+	DefaultOutputSize = 64 << 10
+)
+
+// Environments.
+const (
+	Production  = "production"
+	Development = "development"
+)
+
+// NATS holds broker connection settings.
+type NATS struct {
+	URLs            []string
+	ClientName      string
 	CredentialsFile string
 	Token           string
 	Username        string
 	Password        string
-
+	CAFile          string
+	CertFile        string
+	KeyFile         string
 	ConnectTimeout  time.Duration
-	StartupTimeout  time.Duration
 	ReconnectWait   time.Duration
-	ReconnectJitter time.Duration
 	DrainTimeout    time.Duration
-
-	// IdentityFile stores the control-plane-assigned identity and current lease
-	// credential. The file is created with restrictive permissions.
-	IdentityFile       string
-	OperationStoreFile string
-
-	// EnrollmentToken is a one-time bootstrap credential. It is never persisted
-	// by the agent and is only used when no registered identity exists.
-	EnrollmentToken string
-	AgentVersion    string
-
-	RegistrationSubject     string
-	LeaseRenewSubject       string
-	RequestTimeout          time.Duration
-	EventBufferSize         int
-	JetStreamStream         string
-	EventNakDelay           time.Duration
-	OperationWorkers        int
-	OperationQueueSize      int
-	MaxOperationTimeout     time.Duration
-	MaxOperationInputBytes  int
-	MaxOperationOutputBytes int
-	ResultPublishTimeout    time.Duration
-
-	// Service management is separately opt-in and restricted to exact local
-	// systemd unit names. Mutating actions require an additional opt-in.
-	ServiceManagementEnabled bool
-	ServiceControlEnabled    bool
-	AllowedServices          []string
-	SystemctlPath            string
 }
 
-// LoadConfig loads and validates agent configuration from the process
-// environment. It does not log configuration values or exit the process.
-func LoadConfig() (Config, error) {
-	if raw := strings.TrimSpace(os.Getenv(envRemovedExecutionEnabled)); raw != "" {
-		enabled, err := strconv.ParseBool(raw)
-		if err != nil {
-			return Config{}, fmt.Errorf("%s must be a boolean; generic command/script execution is not supported by this Agent build", envRemovedExecutionEnabled)
-		}
-		if enabled {
-			return Config{}, fmt.Errorf("%s=true is no longer supported; this Agent build exposes structured OS capabilities only", envRemovedExecutionEnabled)
-		}
-	}
-	get := func(key, fallback string) string {
-		value := strings.TrimSpace(os.Getenv(key))
-		if value == "" {
-			return fallback
-		}
-		return value
-	}
-
-	brokerURL := firstNonEmpty(
-		os.Getenv(envAgentNATSURL),
-		os.Getenv(envEventBrokerURL),
-		os.Getenv(envNATSURL),
-	)
-
-	cfg := Config{
-		Environment:              strings.ToLower(get(envEnvironment, "development")),
-		LogLevel:                 strings.ToLower(get("MACHINARCHY_LOG_LEVEL", "info")),
-		ClientName:               get(envAgentName, "machinarchy-agent"),
-		BrokerURLs:               strings.TrimSpace(brokerURL),
-		CredentialsFile:          strings.TrimSpace(os.Getenv(envNATSCredentialsFile)),
-		Token:                    os.Getenv(envNATSToken),
-		Username:                 os.Getenv(envNATSUsername),
-		Password:                 os.Getenv(envNATSPassword),
-		ConnectTimeout:           5 * time.Second,
-		StartupTimeout:           30 * time.Second,
-		ReconnectWait:            2 * time.Second,
-		ReconnectJitter:          500 * time.Millisecond,
-		DrainTimeout:             10 * time.Second,
-		IdentityFile:             get(envAgentStateFile, defaultIdentityFile(strings.ToLower(get(envEnvironment, "development")))),
-		OperationStoreFile:       strings.TrimSpace(os.Getenv(envOperationStoreFile)),
-		EnrollmentToken:          os.Getenv(envAgentEnrollmentToken),
-		AgentVersion:             get(envAgentVersion, "dev"),
-		RegistrationSubject:      get(envRegisterSubject, agentv1.SubjectRegisterAgent),
-		LeaseRenewSubject:        get(envLeaseRenewSubject, agentv1.SubjectRenewLease),
-		RequestTimeout:           5 * time.Second,
-		EventBufferSize:          DefaultEventBufferSize,
-		JetStreamStream:          agentv1.AgentEventsStreamName,
-		EventNakDelay:            5 * time.Second,
-		OperationWorkers:         DefaultOperationWorkers,
-		OperationQueueSize:       DefaultOperationQueue,
-		MaxOperationTimeout:      5 * time.Minute,
-		MaxOperationInputBytes:   MaxOperationInputBytes,
-		MaxOperationOutputBytes:  MaxOperationOutputBytes,
-		ResultPublishTimeout:     5 * time.Second,
-		ServiceManagementEnabled: false,
-		ServiceControlEnabled:    false,
-		SystemctlPath:            "/usr/bin/systemctl",
-	}
-
-	if cfg.OperationStoreFile == "" {
-		cfg.OperationStoreFile = cfg.IdentityFile + ".operations.json"
-	}
-
-	var err error
-	if cfg.ConnectTimeout, err = durationFromEnv(envConnectTimeout, cfg.ConnectTimeout); err != nil {
-		return Config{}, err
-	}
-	if cfg.StartupTimeout, err = durationFromEnv(envStartupTimeout, cfg.StartupTimeout); err != nil {
-		return Config{}, err
-	}
-	if cfg.ReconnectWait, err = durationFromEnv(envReconnectWait, cfg.ReconnectWait); err != nil {
-		return Config{}, err
-	}
-	if cfg.ReconnectJitter, err = nonNegativeDurationFromEnv(envReconnectJitter, cfg.ReconnectJitter); err != nil {
-		return Config{}, err
-	}
-	if cfg.DrainTimeout, err = durationFromEnv(envDrainTimeout, cfg.DrainTimeout); err != nil {
-		return Config{}, err
-	}
-	if cfg.RequestTimeout, err = durationFromEnv(envRequestTimeout, cfg.RequestTimeout); err != nil {
-		return Config{}, err
-	}
-	if cfg.EventBufferSize, err = positiveIntFromEnv(envEventBufferSize, cfg.EventBufferSize); err != nil {
-		return Config{}, err
-	}
-	cfg.JetStreamStream = get(envJetStreamStream, cfg.JetStreamStream)
-	if cfg.EventNakDelay, err = durationFromEnv(envEventNakDelay, cfg.EventNakDelay); err != nil {
-		return Config{}, err
-	}
-	if cfg.OperationWorkers, err = positiveIntFromEnv(envOperationWorkers, cfg.OperationWorkers); err != nil {
-		return Config{}, err
-	}
-	if cfg.OperationQueueSize, err = positiveIntFromEnv(envOperationQueueSize, cfg.OperationQueueSize); err != nil {
-		return Config{}, err
-	}
-	if cfg.MaxOperationTimeout, err = durationFromEnv(envOperationTimeout, cfg.MaxOperationTimeout); err != nil {
-		return Config{}, err
-	}
-	if cfg.MaxOperationInputBytes, err = positiveIntFromEnv(envOperationInputLimit, cfg.MaxOperationInputBytes); err != nil {
-		return Config{}, err
-	}
-	if cfg.MaxOperationOutputBytes, err = positiveIntFromEnv(envOperationOutputLimit, cfg.MaxOperationOutputBytes); err != nil {
-		return Config{}, err
-	}
-	if cfg.ResultPublishTimeout, err = durationFromEnv(envResultPublishTimeout, cfg.ResultPublishTimeout); err != nil {
-		return Config{}, err
-	}
-	if cfg.ServiceManagementEnabled, err = boolFromEnv(envServiceManagementEnabled, cfg.ServiceManagementEnabled); err != nil {
-		return Config{}, err
-	}
-	if cfg.ServiceControlEnabled, err = boolFromEnv(envServiceControlEnabled, cfg.ServiceControlEnabled); err != nil {
-		return Config{}, err
-	}
-	cfg.SystemctlPath = strings.TrimSpace(get(envSystemctlPath, cfg.SystemctlPath))
-	if raw := strings.TrimSpace(os.Getenv(envServiceAllowlist)); raw != "" {
-		for _, name := range strings.Split(raw, ",") {
-			name = strings.TrimSpace(name)
-			if name == "" {
-				return Config{}, fmt.Errorf("%s must be a comma-separated list without empty entries", envServiceAllowlist)
-			}
-			cfg.AllowedServices = append(cfg.AllowedServices, name)
-		}
-	}
-
-	if err := cfg.Validate(); err != nil {
-		return Config{}, err
-	}
-	return cfg, nil
-}
-
-// Validate checks configuration without exposing secret values in errors.
-func (c Config) Validate() error {
-	if c.Environment != "development" && c.Environment != "test" && c.Environment != "production" {
-		return fmt.Errorf("%s must be development, test, or production", envEnvironment)
-	}
-	if strings.TrimSpace(c.ClientName) == "" || strings.TrimSpace(c.ClientName) != c.ClientName || strings.ContainsAny(c.ClientName, "\r\n\x00") {
-		return fmt.Errorf("%s must be a non-empty single-line value without surrounding whitespace", envAgentName)
-	}
-	switch c.LogLevel {
-	case "debug", "info", "warn", "error":
-	default:
-		return errors.New("MACHINARCHY_LOG_LEVEL must be debug, info, warn, or error")
-	}
-	if c.BrokerURLs == "" {
-		return fmt.Errorf("%s (or %s) is required", envAgentNATSURL, envEventBrokerURL)
-	}
-	if strings.TrimSpace(c.IdentityFile) == "" || strings.TrimSpace(c.IdentityFile) != c.IdentityFile || strings.ContainsAny(c.IdentityFile, "\r\n\x00") {
-		return errors.New("agent identity file path must be valid and non-empty")
-	}
-	if c.OperationStoreFile != "" {
-		if strings.TrimSpace(c.OperationStoreFile) != c.OperationStoreFile || strings.ContainsAny(c.OperationStoreFile, "\r\n\x00") {
-			return errors.New("agent operation store path is invalid")
-		}
-	}
-	operationStorePath := c.OperationStoreFile
-	if operationStorePath == "" {
-		operationStorePath = c.IdentityFile + ".operations.json"
-	}
-	identityPath := normalizedStatePath(c.IdentityFile)
-	operationPath := normalizedStatePath(operationStorePath)
-	eventLedgerPath := normalizedStatePath(c.IdentityFile + ".events.json")
-	if identityPath == operationPath {
-		return errors.New("agent identity and operation store must use different files")
-	}
-	if operationPath == eventLedgerPath {
-		return errors.New("agent operation store and event ledger must use different files")
-	}
-	if c.ConnectTimeout <= 0 || c.StartupTimeout <= 0 || c.ReconnectWait <= 0 || c.DrainTimeout <= 0 || c.RequestTimeout <= 0 || c.ReconnectJitter < 0 {
-		return errors.New("agent timeouts must be positive; reconnect jitter cannot be negative")
-	}
-	if c.EventBufferSize < 1 || c.EventBufferSize > maxEventBufferSize {
-		return fmt.Errorf("%s must be between 1 and %d", envEventBufferSize, maxEventBufferSize)
-	}
-	if !ValidJetStreamStreamName(c.JetStreamStream) {
-		return fmt.Errorf("%s must be a valid JetStream stream name", envJetStreamStream)
-	}
-	if c.EventNakDelay <= 0 || c.EventNakDelay > 5*time.Minute {
-		return fmt.Errorf("%s must be between 1ns and 5m", envEventNakDelay)
-	}
-	if c.OperationWorkers < 1 || c.OperationWorkers > MaxOperationWorkers {
-		return fmt.Errorf("%s must be between 1 and %d", envOperationWorkers, MaxOperationWorkers)
-	}
-	if c.OperationQueueSize < 1 || c.OperationQueueSize > MaxOperationQueue {
-		return fmt.Errorf("%s must be between 1 and %d", envOperationQueueSize, MaxOperationQueue)
-	}
-	if c.MaxOperationTimeout <= 0 || c.MaxOperationTimeout > MaxOperationTimeout {
-		return fmt.Errorf("%s must be positive and no greater than %s", envOperationTimeout, MaxOperationTimeout)
-	}
-	if c.MaxOperationInputBytes < 1 || c.MaxOperationInputBytes > MaxOperationInputBytes {
-		return fmt.Errorf("%s must be between 1 and %d", envOperationInputLimit, MaxOperationInputBytes)
-	}
-	if c.MaxOperationOutputBytes < 1 || c.MaxOperationOutputBytes > MaxOperationOutputBytes {
-		return fmt.Errorf("%s must be between 1 and %d", envOperationOutputLimit, MaxOperationOutputBytes)
-	}
-	if c.ResultPublishTimeout <= 0 {
-		return fmt.Errorf("%s must be positive", envResultPublishTimeout)
-	}
-	if c.ServiceControlEnabled && !c.ServiceManagementEnabled {
-		return fmt.Errorf("%s requires %s=true", envServiceControlEnabled, envServiceManagementEnabled)
-	}
-	if c.ServiceManagementEnabled {
-		if len(c.AllowedServices) == 0 || len(c.AllowedServices) > maxAllowedServices {
-			return fmt.Errorf("%s requires between 1 and %d exact .service unit names", envServiceAllowlist, maxAllowedServices)
-		}
-		if c.SystemctlPath == "" || !filepath.IsAbs(c.SystemctlPath) || strings.ContainsAny(c.SystemctlPath, "\r\n\x00") {
-			return fmt.Errorf("%s must be an absolute single-line executable path", envSystemctlPath)
-		}
-		seen := make(map[string]struct{}, len(c.AllowedServices))
-		for _, name := range c.AllowedServices {
-			if err := servicesv1.ValidateServiceName(name); err != nil {
-				return fmt.Errorf("%s contains an invalid unit name", envServiceAllowlist)
-			}
-			if _, exists := seen[name]; exists {
-				return fmt.Errorf("%s contains duplicate unit names", envServiceAllowlist)
-			}
-			seen[name] = struct{}{}
-		}
-	} else if len(c.AllowedServices) != 0 {
-		return fmt.Errorf("%s requires %s=true", envServiceAllowlist, envServiceManagementEnabled)
-	}
-	if len(c.EnrollmentToken) > 256 || strings.TrimSpace(c.EnrollmentToken) != c.EnrollmentToken || strings.ContainsAny(c.EnrollmentToken, "\r\n\x00") {
-		return errors.New("agent enrollment token has an invalid format")
-	}
-	if len(c.EnrollmentToken) > 0 && len(c.EnrollmentToken) < 32 {
-		return errors.New("agent enrollment token must contain at least 32 bytes")
-	}
-	if c.AgentVersion == "" || len(c.AgentVersion) > 64 || strings.TrimSpace(c.AgentVersion) != c.AgentVersion || strings.ContainsAny(c.AgentVersion, "\r\n\x00") {
-		return errors.New("agent version must be a non-empty single-line value of at most 64 bytes")
-	}
-	if err := ValidateNATSSubject(envRegisterSubject, c.RegistrationSubject); err != nil {
-		return err
-	}
-	if err := ValidateNATSSubject(envLeaseRenewSubject, c.LeaseRenewSubject); err != nil {
-		return err
-	}
-
-	usesTLS, err := validateBrokerURLs(c.BrokerURLs)
-	if err != nil {
-		return err
-	}
-	if c.Environment == "production" && !usesTLS {
-		return errors.New("production agent connections require tls:// NATS endpoints")
-	}
-
-	if strings.TrimSpace(c.Token) != c.Token || strings.ContainsAny(c.Token, "\r\n\x00") {
-		return fmt.Errorf("%s contains invalid whitespace", envNATSToken)
-	}
-	if strings.TrimSpace(c.Username) != c.Username || strings.TrimSpace(c.Password) != c.Password || strings.ContainsAny(c.Username+c.Password, "\r\n\x00") {
-		return errors.New("NATS username/password contain invalid whitespace")
-	}
-
-	usernameSet := c.Username != ""
-	passwordSet := c.Password != ""
-	if usernameSet != passwordSet {
-		return fmt.Errorf("%s and %s must be configured together", envNATSUsername, envNATSPassword)
-	}
-
-	authMethods := 0
-	if c.CredentialsFile != "" {
-		authMethods++
-	}
-	if c.Token != "" {
-		authMethods++
-	}
-	if usernameSet && passwordSet {
-		authMethods++
-	}
-	if authMethods > 1 {
-		return errors.New("configure only one NATS authentication method: credentials file, token, or username/password")
-	}
-	if c.Environment == "production" && authMethods == 0 {
-		return errors.New("production agent connections require NATS authentication")
-	}
-
-	if c.CredentialsFile != "" {
-		path := ExpandHome(c.CredentialsFile)
-		info, err := os.Lstat(path)
-		if err != nil {
-			return fmt.Errorf("%s cannot be accessed: %w", envNATSCredentialsFile, err)
-		}
-		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-			return fmt.Errorf("%s must reference a regular file, not a symlink", envNATSCredentialsFile)
-		}
-		if info.Mode().Perm()&0o077 != 0 {
-			return fmt.Errorf("%s must not be accessible by group or others (use chmod 0600)", envNATSCredentialsFile)
-		}
-		if info.Size() == 0 {
-			return fmt.Errorf("%s must not reference an empty file", envNATSCredentialsFile)
-		}
-	}
-
-	return nil
-}
-
-func validateBrokerURLs(raw string) (bool, error) {
-	parts := strings.Split(raw, ",")
-	allTLS := true
-	for _, part := range parts {
-		endpoint := strings.TrimSpace(part)
-		if endpoint == "" {
-			return false, fmt.Errorf("%s contains an empty endpoint", envAgentNATSURL)
-		}
-		u, err := url.Parse(endpoint)
-		if err != nil {
-			return false, fmt.Errorf("%s contains an invalid endpoint", envAgentNATSURL)
-		}
-		if u.Scheme != "nats" && u.Scheme != "tls" {
-			return false, fmt.Errorf("%s endpoints must use nats:// or tls://", envAgentNATSURL)
-		}
-		if u.Hostname() == "" || u.User != nil || u.Path != "" && u.Path != "/" || u.RawQuery != "" || u.Fragment != "" {
-			return false, fmt.Errorf("%s endpoints must contain a host only; credentials must use dedicated authentication settings", envAgentNATSURL)
-		}
-		if port := u.Port(); port != "" {
-			number, parseErr := strconv.Atoi(port)
-			if parseErr != nil || number < 1 || number > 65535 {
-				return false, fmt.Errorf("%s contains an invalid endpoint port", envAgentNATSURL)
-			}
-		}
-		if u.Scheme != "tls" {
-			allTLS = false
-		}
-	}
-	return allTLS, nil
-}
-
-func positiveIntFromEnv(key string, fallback int) (int, error) {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return fallback, nil
-	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil || parsed < 1 {
-		return 0, fmt.Errorf("%s must be a positive integer", key)
-	}
-	return parsed, nil
-}
-
-func boolFromEnv(key string, fallback bool) (bool, error) {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return fallback, nil
-	}
-	parsed, err := strconv.ParseBool(value)
-	if err != nil {
-		return false, fmt.Errorf("%s must be true or false", key)
-	}
-	return parsed, nil
-}
-
-func durationFromEnv(key string, fallback time.Duration) (time.Duration, error) {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return fallback, nil
-	}
-	d, err := time.ParseDuration(value)
-	if err != nil || d <= 0 {
-		return 0, fmt.Errorf("%s must be a positive duration", key)
-	}
-	return d, nil
-}
-
-func nonNegativeDurationFromEnv(key string, fallback time.Duration) (time.Duration, error) {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return fallback, nil
-	}
-	d, err := time.ParseDuration(value)
-	if err != nil || d < 0 {
-		return 0, fmt.Errorf("%s must be a non-negative duration", key)
-	}
-	return d, nil
-}
-
-func (c Config) NormalizedBrokerURLs() string {
-	parts := strings.Split(c.BrokerURLs, ",")
-	for i := range parts {
-		parts[i] = strings.TrimSpace(parts[i])
-	}
-	return strings.Join(parts, ",")
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
-}
-
-func normalizedStatePath(path string) string {
-	return filepath.Clean(ExpandHome(path))
-}
-
-func ExpandHome(path string) string {
-	if path == "~" {
-		if home, err := os.UserHomeDir(); err == nil {
-			return home
-		}
-	}
-	if strings.HasPrefix(path, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, strings.TrimPrefix(path, "~/"))
-		}
-	}
-	return path
-}
-
-func defaultIdentityFile(environment string) string {
-	if environment == "production" {
-		return "/var/lib/machinarchy-agent/identity.json"
-	}
-	return "./data/agent/identity.json"
-}
-
-func ValidateNATSSubject(name, subject string) error {
-	if subject == "" || len(subject) > 255 || strings.TrimSpace(subject) != subject || strings.ContainsAny(subject, "\r\n\x00 *,>") {
-		return fmt.Errorf("%s must be a valid literal NATS subject", name)
-	}
-	for _, part := range strings.Split(subject, ".") {
-		if part == "" {
-			return fmt.Errorf("%s must not contain empty subject tokens", name)
-		}
-	}
-	return nil
-}
-
-// ValidJetStreamStreamName applies the conservative subset of NATS stream-name
-// characters accepted by JetStream. It deliberately rejects dots and wildcard
-// tokens, which are meaningful in subjects but not in stream names.
-func ValidJetStreamStreamName(value string) bool {
-	if value == "" || len(value) > 128 || strings.TrimSpace(value) != value {
-		return false
-	}
-	for _, r := range value {
-		if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') && r != '_' && r != '-' {
+// UsesTLS reports whether every endpoint is tls://.
+func (n NATS) UsesTLS() bool {
+	for _, u := range n.URLs {
+		if !strings.HasPrefix(u, "tls://") {
 			return false
 		}
 	}
-	return true
+	return len(n.URLs) > 0
+}
+
+// Config is the validated agent configuration.
+type Config struct {
+	Environment         string
+	LogLevel            slog.Level
+	NATS                NATS
+	StateFile           string
+	ControllerPublicKey ed25519.PublicKey
+	EnrollmentToken     string
+	RequestTimeout      time.Duration
+	ShutdownTimeout     time.Duration
+	Workers             int
+	QueueSize           int
+	MaxOperationTimeout time.Duration
+	MaxOutputBytes      int
+	ServiceEnabled      bool
+	Services            capabilities.ServiceOptions
+}
+
+// Load reads configuration through getenv (os.Getenv in production).
+func Load(getenv func(string) string) (Config, error) {
+	get := func(key, fallback string) string {
+		if value := strings.TrimSpace(getenv(key)); value != "" {
+			return value
+		}
+		return fallback
+	}
+	var removed []string
+	for _, key := range removedSettings {
+		if getenv(key) != "" {
+			removed = append(removed, key)
+		}
+	}
+	if len(removed) > 0 {
+		return Config{}, fmt.Errorf("unsupported settings are set (remove them): %s", strings.Join(removed, ", "))
+	}
+
+	cfg := Config{
+		Environment: strings.ToLower(get(EnvEnvironment, Production)),
+		NATS: NATS{
+			ClientName:      get(EnvAgentName, "machinarchy-agent"),
+			CredentialsFile: get(EnvNATSCredentialsFile, ""),
+			Token:           getenv(EnvNATSToken),
+			Username:        getenv(EnvNATSUsername),
+			Password:        getenv(EnvNATSPassword),
+			CAFile:          get(EnvNATSCAFile, ""),
+			CertFile:        get(EnvNATSCertFile, ""),
+			KeyFile:         get(EnvNATSKeyFile, ""),
+		},
+		Services: capabilities.ServiceOptions{SystemctlPath: get(EnvSystemctlPath, "/usr/bin/systemctl")},
+	}
+	if cfg.Environment != Production && cfg.Environment != Development {
+		return Config{}, fmt.Errorf("%s must be %q or %q", EnvEnvironment, Production, Development)
+	}
+	var err error
+	if cfg.LogLevel, err = parseLevel(get(EnvLogLevel, "info")); err != nil {
+		return Config{}, err
+	}
+	for _, raw := range strings.Split(getenv(EnvNATSURL), ",") {
+		if raw = strings.TrimSpace(raw); raw != "" {
+			cfg.NATS.URLs = append(cfg.NATS.URLs, raw)
+		}
+	}
+
+	defaultState := "/var/lib/machinarchy-agent/state.json"
+	if cfg.Environment == Development {
+		defaultState = filepath.Join("data", "agent", "state.json")
+	}
+	if cfg.StateFile, err = filepath.Abs(get(EnvStateFile, defaultState)); err != nil {
+		return Config{}, fmt.Errorf("%s: %w", EnvStateFile, err)
+	}
+
+	durations := []struct {
+		key      string
+		target   *time.Duration
+		fallback time.Duration
+		max      time.Duration
+	}{
+		{EnvConnectTimeout, &cfg.NATS.ConnectTimeout, 5 * time.Second, time.Minute},
+		{EnvReconnectWait, &cfg.NATS.ReconnectWait, 2 * time.Second, time.Minute},
+		{EnvDrainTimeout, &cfg.NATS.DrainTimeout, 5 * time.Second, time.Minute},
+		{EnvRequestTimeout, &cfg.RequestTimeout, 5 * time.Second, time.Minute},
+		{EnvShutdownTimeout, &cfg.ShutdownTimeout, 20 * time.Second, 5 * time.Minute},
+		{EnvOperationTimeout, &cfg.MaxOperationTimeout, 5 * time.Minute, agentv1.MaxOperationTimeout},
+	}
+	for _, d := range durations {
+		if *d.target, err = parseDuration(d.key, get(d.key, ""), d.fallback, d.max); err != nil {
+			return Config{}, err
+		}
+	}
+	ints := []struct {
+		key           string
+		target        *int
+		fallback, max int
+	}{
+		{EnvOperationWorkers, &cfg.Workers, 4, MaxWorkers},
+		{EnvOperationQueueSize, &cfg.QueueSize, 32, MaxQueueSize},
+		{EnvOperationMaxOutput, &cfg.MaxOutputBytes, DefaultOutputSize, agentv1.MaxOperationOutput},
+	}
+	for _, i := range ints {
+		if *i.target, err = parseInt(i.key, get(i.key, ""), i.fallback, i.max); err != nil {
+			return Config{}, err
+		}
+	}
+	if cfg.ServiceEnabled, err = parseBool(EnvServiceManagement, get(EnvServiceManagement, "false")); err != nil {
+		return Config{}, err
+	}
+	if cfg.Services.ControlEnabled, err = parseBool(EnvServiceControl, get(EnvServiceControl, "false")); err != nil {
+		return Config{}, err
+	}
+	for _, unit := range strings.Split(getenv(EnvServiceAllowlist), ",") {
+		if unit = strings.TrimSpace(unit); unit != "" {
+			cfg.Services.Allowed = append(cfg.Services.Allowed, unit)
+		}
+	}
+
+	if cfg.ControllerPublicKey, err = loadControllerKey(getenv); err != nil {
+		return Config{}, err
+	}
+	if cfg.EnrollmentToken, err = valueOrFile(getenv, EnvEnrollmentToken, EnvEnrollmentTokenFile, true); err != nil {
+		return Config{}, err
+	}
+	return cfg, cfg.Validate()
+}
+
+// Validate checks cross-field rules.
+func (c Config) Validate() error {
+	if len(c.NATS.URLs) == 0 {
+		return fmt.Errorf("%s is required", EnvNATSURL)
+	}
+	for _, raw := range c.NATS.URLs {
+		u, err := url.Parse(raw)
+		if err != nil || (u.Scheme != "nats" && u.Scheme != "tls") || u.Hostname() == "" || u.User != nil ||
+			(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+			return fmt.Errorf("%s entries must be nats://host:port or tls://host:port without credentials", EnvNATSURL)
+		}
+	}
+	if !validLine(c.NATS.ClientName, 128) {
+		return fmt.Errorf("%s must be a single line of at most 128 characters", EnvAgentName)
+	}
+	methods := 0
+	for _, set := range []bool{c.NATS.CredentialsFile != "", c.NATS.Token != "", c.NATS.Username != "" || c.NATS.Password != ""} {
+		if set {
+			methods++
+		}
+	}
+	if methods > 1 {
+		return errors.New("configure exactly one NATS authentication method: credentials file, token, or username/password")
+	}
+	if (c.NATS.Username == "") != (c.NATS.Password == "") {
+		return fmt.Errorf("%s and %s must be set together", EnvNATSUsername, EnvNATSPassword)
+	}
+	if (c.NATS.CertFile == "") != (c.NATS.KeyFile == "") {
+		return fmt.Errorf("%s and %s must be set together", EnvNATSCertFile, EnvNATSKeyFile)
+	}
+	for key, path := range map[string]string{EnvNATSCredentialsFile: c.NATS.CredentialsFile, EnvNATSKeyFile: c.NATS.KeyFile} {
+		if path != "" {
+			if err := checkPrivateFile(key, path); err != nil {
+				return err
+			}
+		}
+	}
+	for key, path := range map[string]string{EnvNATSCAFile: c.NATS.CAFile, EnvNATSCertFile: c.NATS.CertFile} {
+		if path != "" {
+			if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
+				return fmt.Errorf("%s must reference a readable regular file", key)
+			}
+		}
+	}
+	if c.Environment == Production {
+		if !c.NATS.UsesTLS() {
+			return fmt.Errorf("production requires tls:// endpoints in %s", EnvNATSURL)
+		}
+		if methods == 0 && c.NATS.CertFile == "" {
+			return errors.New("production requires NATS authentication (credentials file, token, username/password, or client certificate)")
+		}
+	}
+	if len(c.ControllerPublicKey) != ed25519.PublicKeySize {
+		return fmt.Errorf("%s or %s is required", EnvControllerPublicKey, EnvControllerPublicKeyFile)
+	}
+	if c.EnrollmentToken != "" && (len(c.EnrollmentToken) < agentv1.MinEnrollmentToken || len(c.EnrollmentToken) > agentv1.MaxEnrollmentToken || !validLine(c.EnrollmentToken, agentv1.MaxEnrollmentToken)) {
+		return fmt.Errorf("enrollment token must be %d-%d characters on one line", agentv1.MinEnrollmentToken, agentv1.MaxEnrollmentToken)
+	}
+	if c.Workers > c.QueueSize {
+		return fmt.Errorf("%s must not exceed %s", EnvOperationWorkers, EnvOperationQueueSize)
+	}
+	if c.Services.ControlEnabled && !c.ServiceEnabled {
+		return fmt.Errorf("%s requires %s=true", EnvServiceControl, EnvServiceManagement)
+	}
+	if c.ServiceEnabled && len(c.Services.Allowed) == 0 {
+		return fmt.Errorf("%s requires %s", EnvServiceManagement, EnvServiceAllowlist)
+	}
+	if !c.ServiceEnabled && len(c.Services.Allowed) > 0 {
+		return fmt.Errorf("%s is set but %s is not true", EnvServiceAllowlist, EnvServiceManagement)
+	}
+	for _, unit := range c.Services.Allowed {
+		if err := agentv1.ValidateServiceName(unit); err != nil {
+			return fmt.Errorf("%s entry %q: %w", EnvServiceAllowlist, unit, err)
+		}
+	}
+	return nil
+}
+
+func loadControllerKey(getenv func(string) string) (ed25519.PublicKey, error) {
+	raw, err := valueOrFile(getenv, EnvControllerPublicKey, EnvControllerPublicKeyFile, false)
+	if err != nil || raw == "" {
+		return nil, err
+	}
+	key, err := agentv1.ParsePublicKey(raw)
+	if err != nil {
+		return nil, fmt.Errorf("controller public key: %w", err)
+	}
+	return key, nil
+}
+
+// valueOrFile reads a value from key or from the file named by fileKey.
+// Secret files must not be readable by group or others.
+func valueOrFile(getenv func(string) string, key, fileKey string, secret bool) (string, error) {
+	value, path := strings.TrimSpace(getenv(key)), strings.TrimSpace(getenv(fileKey))
+	if value != "" && path != "" {
+		return "", fmt.Errorf("set only one of %s and %s", key, fileKey)
+	}
+	if path == "" {
+		return value, nil
+	}
+	if secret {
+		if err := checkPrivateFile(fileKey, path); err != nil {
+			return "", err
+		}
+	}
+	data, err := os.ReadFile(path) // #nosec G304 -- operator-configured path.
+	if err != nil {
+		return "", fmt.Errorf("%s cannot be read", fileKey)
+	}
+	if len(data) > 4096 {
+		return "", fmt.Errorf("%s is too large", fileKey)
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+func checkPrivateFile(key, path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("%s cannot be accessed", key)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() == 0 {
+		return fmt.Errorf("%s must be a non-empty regular file, not a symlink", key)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("%s must not be accessible by group or others (chmod 0600)", key)
+	}
+	return nil
+}
+
+func validLine(value string, maxLength int) bool {
+	return value != "" && len(value) <= maxLength && !strings.ContainsAny(value, "\r\n\x00") && strings.TrimSpace(value) == value
+}
+
+func parseLevel(value string) (slog.Level, error) {
+	switch strings.ToLower(value) {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "info":
+		return slog.LevelInfo, nil
+	case "warn":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	}
+	return 0, fmt.Errorf("%s must be debug, info, warn, or error", EnvLogLevel)
+}
+
+func parseDuration(key, value string, fallback, maxValue time.Duration) (time.Duration, error) {
+	if value == "" {
+		return fallback, nil
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil || d <= 0 || d > maxValue {
+		return 0, fmt.Errorf("%s must be a duration between 1ns and %s", key, maxValue)
+	}
+	return d, nil
+}
+
+func parseInt(key, value string, fallback, maxValue int) (int, error) {
+	if value == "" {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 1 || n > maxValue {
+		return 0, fmt.Errorf("%s must be an integer between 1 and %d", key, maxValue)
+	}
+	return n, nil
+}
+
+func parseBool(key, value string) (bool, error) {
+	b, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("%s must be true or false", key)
+	}
+	return b, nil
 }
