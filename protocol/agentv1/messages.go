@@ -376,3 +376,9 @@ func (r *Result) Validate() error {
 	}
 	return nil
 }
+
+// SignerAgentID identifies the agent whose key signs this request.
+func (r *RenewRequest) SignerAgentID() string { return r.AgentID }
+
+// SignerAgentID identifies the agent whose key signs this result.
+func (r *Result) SignerAgentID() string { return r.AgentID }

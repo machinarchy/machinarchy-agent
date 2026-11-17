@@ -240,3 +240,27 @@ func TestGoldenWireFormat(t *testing.T) {
 	}
 	t.Logf("controller public key: %s", EncodePublicKey(controller.Public().(ed25519.PublicKey)))
 }
+
+func TestOpenFromAgentUsesRegisteredKey(t *testing.T) {
+	agentKey := testKey(5)
+	completed := fixedTime
+	raw, err := Seal(agentKey, KindResult, &Result{ProtocolVersion: 1, AgentID: "agent-9", OperationID: "op",
+		Status: StatusFailed, AcceptedAt: fixedTime, CompletedAt: &completed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := map[string]ed25519.PublicKey{"agent-9": agentKey.Public().(ed25519.PublicKey)}
+	lookup := func(id string) (ed25519.PublicKey, bool) { key, ok := keys[id]; return key, ok }
+	var result Result
+	if err := OpenFromAgent(KindResult, raw, MaxResultMessageBytes, lookup, &result); err != nil {
+		t.Fatalf("OpenFromAgent() = %v", err)
+	}
+	keys["agent-9"] = testKey(6).Public().(ed25519.PublicKey)
+	if err := OpenFromAgent(KindResult, raw, MaxResultMessageBytes, lookup, &result); !errors.Is(err, ErrInvalidSignature) {
+		t.Fatalf("impersonation error = %v", err)
+	}
+	delete(keys, "agent-9")
+	if err := OpenFromAgent(KindResult, raw, MaxResultMessageBytes, lookup, &result); !errors.Is(err, ErrInvalidSignature) {
+		t.Fatalf("unknown agent error = %v", err)
+	}
+}

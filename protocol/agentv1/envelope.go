@@ -119,6 +119,31 @@ func OpenRegisterRequest(raw []byte) (RegisterRequest, error) {
 	return request, nil
 }
 
+// AgentSigned is implemented by bodies signed with a registered agent key.
+type AgentSigned interface {
+	Body
+	SignerAgentID() string
+}
+
+// OpenFromAgent verifies a message signed by a registered agent. keyFor
+// returns the public key recorded at registration for the agent ID claimed in
+// the body; unknown agents are rejected with ErrInvalidSignature. Used by the
+// controller for lease renewals and results.
+func OpenFromAgent(kind Kind, raw []byte, limit int, keyFor func(agentID string) (ed25519.PublicKey, bool), out AgentSigned) error {
+	envelope, err := decodeEnvelope(kind, raw, limit)
+	if err != nil {
+		return err
+	}
+	if err := decodeBody(envelope.Body, out); err != nil {
+		return err
+	}
+	key, ok := keyFor(out.SignerAgentID())
+	if !ok || len(key) != ed25519.PublicKeySize || !ed25519.Verify(key, signingInput(kind, envelope.Body), envelope.Signature) {
+		return ErrInvalidSignature
+	}
+	return nil
+}
+
 func decodeEnvelope(kind Kind, raw []byte, limit int) (Envelope, error) {
 	var envelope Envelope
 	if len(raw) == 0 || len(raw) > limit {
