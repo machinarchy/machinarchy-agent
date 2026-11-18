@@ -7,6 +7,8 @@ notes and file-level details belong in `ChangeLogAI.md`.
 
 ### Changed
 
+- Enrollment tokens are single-use and issued per host by a machinarchy
+  owner; the shared token is for development only.
 - With NATS in operator (JWT) mode, the agent connects with its own NATS user
   JWT from the controller after enrolment, limited to its own subjects,
   consumer and inbox. `MACHINARCHY_AGENT_NATS_CREDENTIALS_FILE` then serves

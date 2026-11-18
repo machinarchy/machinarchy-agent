@@ -21,8 +21,12 @@ controller ──signed commands (JetStream)──▶ agent ──▶ capabiliti
 
 - **Enrollment and identity.**
   - On first start the agent creates an Ed25519 key.
-  - It enrolls with an enrollment token, then renews a lease on the
-    controller's cadence. A revoked agent is refused when it tries again.
+  - It enrolls with a single-use enrollment token that an owner issues for
+    this host, then renews a lease on the controller's cadence. A revoked
+    agent is refused when it tries again.
+  - With NATS in operator mode, it then connects with its own NATS user JWT,
+    limited to its own subjects, consumer and inbox (see
+    [docs/protocol.md](docs/protocol.md#nats-credentials)).
   - The controller's public key is pinned in configuration. Commands and
     responses not signed by it are rejected.
 - **At-most-once execution.**
@@ -44,14 +48,17 @@ by the integration tests.
 ## Quick start (development)
 
 Run machinarchy with its agent gateway enabled (see its
-`docs/operations.md#agent-gateway`), then point the agent at the same NATS:
+`docs/operations.md#agent-gateway`; `go run ./deployments/nats/generate` there
+creates an operator-mode NATS setup), then point the agent at the same NATS:
 
 ```bash
 docker compose -f docker-compose.yml up -d          # local NATS with JetStream
 cp .env.example .env
 # MACHINARCHY_AGENT_NATS_URL=nats://127.0.0.1:4222
+# MACHINARCHY_AGENT_NATS_CREDENTIALS_FILE=<bootstrap.creds, in operator mode>
 # MACHINARCHY_AGENT_CONTROLLER_PUBLIC_KEY=<GET /api/v1/agents/controller-key>
-# MACHINARCHY_AGENT_ENROLLMENT_TOKEN_FILE=<the controller's enrollment token file>
+# MACHINARCHY_AGENT_ENROLLMENT_TOKEN_FILE=<a file holding the token from
+#   POST /api/v1/agents/enrollment-tokens, mode 0600>
 set -a; . ./.env; set +a
 go run ./cmd/machinarchy-agent --check-config
 go run ./cmd/machinarchy-agent
@@ -89,7 +96,9 @@ machinarchy) lives in machinarchy's `test/e2e`; machinarchy's CI runs it.
 Environment variables only, validated at startup (`--check-config`); keys and
 tokens may come from files. Required: `MACHINARCHY_AGENT_NATS_URL`,
 `MACHINARCHY_AGENT_CONTROLLER_PUBLIC_KEY[_FILE]`, and an enrollment token on
-first start. Production (the default) requires NATS authentication and TLS.
+first start (single-use, issued per host by a machinarchy owner). Production
+(the default) requires NATS authentication and TLS; in operator mode the
+configured credential is only the bootstrap credential.
 Full reference: [docs/configuration.md](docs/configuration.md).
 
 ## Deploy and operate

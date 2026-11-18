@@ -1,5 +1,13 @@
 # AI Change Log
 
+## 2026-11-18 — Audit Phase 12: docs for per-host tokens and operator mode (branch audit/agent-authz)
+
+- `README.md` (how it works, quick start, configure) and `docs/configuration.md`: enrolment tokens are single-use and issued per host by a machinarchy owner (`POST /api/v1/agents/enrollment-tokens`). The quick start shows the bootstrap credential for operator mode, and points to machinarchy's `deployments/nats/generate`.
+
+### Verification
+
+- Documentation only; checked against machinarchy `a35d557` (token API) and `e1eeb5f` (generator). No code changed.
+
 ## 2026-11-18 — Audit Phase 12: agent connects with its own NATS credential (branch audit/agent-authz)
 
 ### Changed
