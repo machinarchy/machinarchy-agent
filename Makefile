@@ -4,7 +4,8 @@ BIN_DIR ?= bin
 BIN_NAME := machinarchy-agent
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
-BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+# The commit time, not the wall clock, so rebuilding a commit is reproducible.
+BUILD_TIME ?= $(shell git log -1 --format=%cI 2>/dev/null || echo unknown)
 # protocol/ is its own module (imported by machinarchy); every Go target
 # runs in both modules.
 MODULES := . protocol
@@ -48,7 +49,7 @@ gosec: ## Run gosec
 
 build: ## Build the agent binary
 	@mkdir -p $(BIN_DIR)
-	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/$(BIN_NAME) ./cmd/machinarchy-agent
+	$(GO) build -trimpath -buildvcs=false -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/$(BIN_NAME) ./cmd/machinarchy-agent
 
 FUZZTIME ?= 30s
 FUZZ_TARGETS := FuzzOpenCommand FuzzOpenRegisterRequest FuzzParsePublicKey FuzzDecodeStrict
@@ -70,7 +71,7 @@ deployment-check: ## Validate deployment scripts and release packaging
 	./scripts/test-docker-deployment.sh
 
 docker-build: ## Build the container image
-	docker build --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) --build-arg BUILD_TIME=$(BUILD_TIME) -t machinarchy-agent:$(VERSION) .
+	docker buildx build --load --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) --build-arg BUILD_TIME=$(BUILD_TIME) -t machinarchy-agent:$(VERSION) .
 
 clean: ## Remove build and test artifacts
 	rm -rf $(BIN_DIR) dist coverage.out coverage.html

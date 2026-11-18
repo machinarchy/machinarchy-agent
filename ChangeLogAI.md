@@ -20,9 +20,19 @@
   enrolled agent with an unexpired lease. Read-only; no HTTP server is added
   (AGENTS.md). Used by the container `HEALTHCHECK`.
 
+- `Dockerfile`: base images pinned by digest (`golang:1.27.4-bookworm`,
+  `debian:bookworm-slim`), BuildKit cache mounts, `-buildvcs=false`, and a
+  `HEALTHCHECK` running `--healthcheck`. `.dockerignore` is now an allowlist
+  (cmd, internal, protocol; no tests, fake controller, state or credentials).
+- `Makefile`: `BUILD_TIME` is the commit time (reproducible builds), `build`
+  adds `-buildvcs=false`, `docker-build` uses buildx.
+
 ### Verification
 
-- `make test`, `make lint`, `make tidy-check` in both modules. The first fuzz commit
+- `make test`, `make lint`, `make tidy-check` in both modules.
+- `docker buildx build` succeeds; the image reports its version, runs as
+  10001:10001 with STOPSIGNAL SIGTERM and the health check;
+  `scripts/test-docker-deployment.sh` passes. The first fuzz commit
   left one `revive` unused-parameter finding in `fuzz_test.go`; fixed in the
   next commit, after which `make lint` reports 0 issues in both modules.
 - `internal/state/health_test.go` covers missing, unenrolled, live and expired states.

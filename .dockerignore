@@ -1,15 +1,11 @@
-.git
-.github
-.env
-.env.*
-!.env.example
-*.creds
-*.seed
-*.pem
-*.key
-coverage.out
-coverage.html
-dist
-bin
-data
-tests
+# Allowlist: the build sees only what the Dockerfile copies, so state files,
+# credentials (*.creds, *.seed, keys) and local data never reach the context.
+*
+!go.mod
+!go.sum
+!cmd/
+!internal/
+!protocol/
+**/*_test.go
+**/testdata/
+internal/fakecontroller/
