@@ -5,6 +5,11 @@ notes and file-level details belong in `ChangeLogAI.md`.
 
 ## Unreleased
 
+### Added
+
+- `--healthcheck`: exits 0 when the agent is enrolled and its lease is live;
+  the container image uses it as its health check.
+
 ### Breaking: protocol v1 and runtime rewrite (audit/agent-fix)
 
 - The agent now builds. The non-existent `machinarchy-protocol` dependency was

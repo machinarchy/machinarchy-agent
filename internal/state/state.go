@@ -309,3 +309,24 @@ func write(path string, doc *Document) error {
 	}
 	return nil
 }
+
+// ErrUnhealthy reports that the agent is not enrolled or its lease expired.
+var ErrUnhealthy = errors.New("agent is unhealthy")
+
+// Health reads the state file without creating or changing it and reports
+// whether the agent holds an unexpired lease. Lease renewals are written to
+// the state file, so a stuck or disconnected agent turns unhealthy once its
+// lease lapses. It backs `machinarchy-agent --healthcheck`.
+func Health(path string, now time.Time) error {
+	doc, err := load(path)
+	if err != nil {
+		return fmt.Errorf("%w: read state: %w", ErrUnhealthy, err)
+	}
+	switch {
+	case doc.Identity == nil || doc.Identity.AgentID == "":
+		return fmt.Errorf("%w: not enrolled", ErrUnhealthy)
+	case !doc.Identity.LeaseExpiresAt.After(now):
+		return fmt.Errorf("%w: lease expired at %s", ErrUnhealthy, doc.Identity.LeaseExpiresAt.Format(time.RFC3339))
+	}
+	return nil
+}

@@ -10,9 +10,11 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/machinarchy/machinarchy-agent/internal/app"
 	"github.com/machinarchy/machinarchy-agent/internal/config"
+	"github.com/machinarchy/machinarchy-agent/internal/state"
 	"github.com/machinarchy/machinarchy-agent/protocol/agentv1"
 )
 
@@ -33,6 +35,7 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) in
 	showVersion := flags.Bool("version", false, "print version and exit")
 	checkConfig := flags.Bool("check-config", false, "validate configuration and exit")
 	showKey := flags.Bool("public-key", false, "print the agent's public identity key (creating state if needed) and exit")
+	healthcheck := flags.Bool("healthcheck", false, "exit 0 if the agent is enrolled and holds an unexpired lease (container HEALTHCHECK)")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -44,6 +47,13 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) in
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "invalid configuration: %v\n", err)
 		return 2
+	}
+	if *healthcheck {
+		if err := state.Health(cfg.StateFile, time.Now()); err != nil {
+			_, _ = fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
 	}
 	if *checkConfig {
 		_, _ = fmt.Fprintln(stdout, "configuration is valid")

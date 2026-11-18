@@ -15,9 +15,15 @@
   `FuzzOpenRegisterRequest`, `FuzzParsePublicKey`, `FuzzDecodeStrict`.
 - `AGENTS.md`: the golden-fixture update command runs inside `protocol/`.
 
+- `machinarchy-agent --healthcheck` (`cmd/machinarchy-agent/main.go`,
+  `internal/state/state.go` `Health`): exits 0 only when the state file shows an
+  enrolled agent with an unexpired lease. Read-only; no HTTP server is added
+  (AGENTS.md). Used by the container `HEALTHCHECK`.
+
 ### Verification
 
 - `make test`, `make lint` (0 issues), `make tidy-check` in both modules.
+- `internal/state/health_test.go` covers missing, unenrolled, live and expired states.
 - Each fuzz target ran for 10s without findings; `make fuzz FUZZTIME=2s` passes.
 
 ## 2026-11-17 — Audit Phase 4: make the agent build, secure and testable
