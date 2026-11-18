@@ -1,5 +1,25 @@
 # AI Change Log
 
+## 2026-11-18 — Audit Phase 8: protocol module, fuzzing (branch audit/ops)
+
+### Changed
+
+- `protocol/` is now its own module, `github.com/machinarchy/machinarchy-agent/protocol`
+  (`protocol/go.mod`), so machinarchy can import `agentv1` without the agent's
+  internals or test dependencies. The import path of `agentv1` is unchanged;
+  `go.mod` requires it through `replace ... => ./protocol`.
+- `Makefile`: `test`, `test-race`, `vet`, `lint`, `vuln` and `tidy-check` run in
+  both modules; new `coverage`, `gosec` and `fuzz` targets. `Dockerfile` copies
+  `protocol/go.mod` before `go mod download`.
+- Added `protocol/agentv1/fuzz_test.go`: `FuzzOpenCommand`,
+  `FuzzOpenRegisterRequest`, `FuzzParsePublicKey`, `FuzzDecodeStrict`.
+- `AGENTS.md`: the golden-fixture update command runs inside `protocol/`.
+
+### Verification
+
+- `make test`, `make lint` (0 issues), `make tidy-check` in both modules.
+- Each fuzz target ran for 10s without findings; `make fuzz FUZZTIME=2s` passes.
+
 ## 2026-11-17 — Audit Phase 4: make the agent build, secure and testable
 
 ### Changed

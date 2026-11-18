@@ -10,7 +10,7 @@ BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 MODULES := . protocol
 LDFLAGS := -s -w -X main.Version=$(VERSION) -X main.Commit=$(COMMIT) -X main.BuildTime=$(BUILD_TIME)
 
-.PHONY: help fmt fmt-check tidy-check test test-race coverage vet lint vuln gosec build run check deployment-check clean docker-build
+.PHONY: help fmt fmt-check tidy-check test test-race coverage vet lint vuln gosec fuzz build run check deployment-check clean docker-build
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*##"}; /^[a-zA-Z0-9_-]+:.*##/ {printf "%-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -49,6 +49,14 @@ gosec: ## Run gosec
 build: ## Build the agent binary
 	@mkdir -p $(BIN_DIR)
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/$(BIN_NAME) ./cmd/machinarchy-agent
+
+FUZZTIME ?= 30s
+FUZZ_TARGETS := FuzzOpenCommand FuzzOpenRegisterRequest FuzzParsePublicKey FuzzDecodeStrict
+
+fuzz: ## Run each protocol fuzz target for FUZZTIME (default 30s)
+	@for target in $(FUZZ_TARGETS); do \
+		(cd protocol && $(GO) test -run=NONE -fuzz="^$$target$$" -fuzztime=$(FUZZTIME) ./agentv1) || exit 1; \
+	done
 
 run: ## Run the agent with the environment inherited from the shell
 	$(GO) run ./cmd/machinarchy-agent

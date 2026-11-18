@@ -8,7 +8,7 @@ inventory, enrollment issuance or authoritative leases.
 
 `protocol/agentv1` is the single source of truth for the controller ↔ agent
 contract. It must depend only on the Go standard library. Any wire change must:
-- update the golden fixtures (`go test ./protocol/... -run Golden -update`);
+- update the golden fixtures (`cd protocol && go test ./agentv1 -run Golden -update`; `protocol/` is its own module);
 - update `docs/protocol.md`;
 - bump `ProtocolVersion` if it is not backward compatible.
 
