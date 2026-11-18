@@ -5,6 +5,7 @@ go 1.27.0
 toolchain go1.27.4
 
 require (
+	github.com/machinarchy/machinarchy-agent/protocol v0.0.0
 	github.com/nats-io/nats-server/v2 v2.15.3
 	github.com/nats-io/nats.go v1.55.0
 )
@@ -21,3 +22,5 @@ require (
 	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
 )
+
+replace github.com/machinarchy/machinarchy-agent/protocol => ./protocol

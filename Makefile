@@ -5,9 +5,12 @@ BIN_NAME := machinarchy-agent
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
 BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+# protocol/ is its own module (imported by machinarchy); every Go target
+# runs in both modules.
+MODULES := . protocol
 LDFLAGS := -s -w -X main.Version=$(VERSION) -X main.Commit=$(COMMIT) -X main.BuildTime=$(BUILD_TIME)
 
-.PHONY: help fmt fmt-check tidy-check test test-race vet lint vuln build run check deployment-check clean docker-build
+.PHONY: help fmt fmt-check tidy-check test test-race coverage vet lint vuln gosec build run check deployment-check clean docker-build
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*##"}; /^[a-zA-Z0-9_-]+:.*##/ {printf "%-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -19,25 +22,29 @@ fmt-check: ## Fail when Go sources are not gofmt formatted
 	@test -z "$$(gofmt -l cmd internal protocol)" || { gofmt -l cmd internal protocol; echo "Run make fmt." >&2; exit 1; }
 
 tidy-check: ## Fail when go.mod/go.sum are not tidy or modules fail verification
-	$(GO) mod verify
-	$(GO) mod tidy -diff
+	@for m in $(MODULES); do (cd $$m && $(GO) mod verify && $(GO) mod tidy -diff) || exit 1; done
 
 test: ## Run unit and integration tests (embedded NATS server)
-	$(GO) test -count=1 ./...
+	@for m in $(MODULES); do (cd $$m && $(GO) test -count=1 ./...) || exit 1; done
 
 test-race: ## Run all tests with the race detector
-	$(GO) test -race -count=1 ./...
+	@for m in $(MODULES); do (cd $$m && $(GO) test -race -count=1 ./...) || exit 1; done
+
+coverage: ## Run tests with the race detector and write coverage.out
+	$(GO) test -race -count=1 -covermode=atomic -coverprofile=coverage.out ./...
+	$(GO) tool cover -func=coverage.out | tail -1
 
 vet: ## Run go vet for the host and Linux release targets
-	$(GO) vet ./...
-	GOOS=linux GOARCH=amd64 $(GO) vet ./...
-	GOOS=linux GOARCH=arm64 $(GO) vet ./...
+	@for m in $(MODULES); do (cd $$m && $(GO) vet ./... && GOOS=linux GOARCH=amd64 $(GO) vet ./... && GOOS=linux GOARCH=arm64 $(GO) vet ./...) || exit 1; done
 
 lint: ## Run golangci-lint (.golangci.yml)
-	golangci-lint run --timeout=5m ./...
+	@for m in $(MODULES); do (cd $$m && golangci-lint run --timeout=5m --config $(CURDIR)/.golangci.yml ./...) || exit 1; done
 
 vuln: ## Run govulncheck
-	govulncheck ./...
+	@for m in $(MODULES); do (cd $$m && govulncheck ./...) || exit 1; done
+
+gosec: ## Run gosec
+	gosec -quiet ./... ./protocol/...
 
 build: ## Build the agent binary
 	@mkdir -p $(BIN_DIR)

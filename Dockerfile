@@ -9,6 +9,7 @@ ARG TARGETARCH
 
 WORKDIR /src
 COPY go.mod go.sum ./
+COPY protocol/go.mod ./protocol/go.mod
 RUN go mod download && go mod verify
 COPY cmd ./cmd
 COPY internal ./internal
