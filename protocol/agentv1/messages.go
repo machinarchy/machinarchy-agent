@@ -47,11 +47,10 @@ func isIdentifierRune(r rune) bool {
 	return false
 }
 
-func validText(value string, maxLength int, required bool) bool {
-	if value == "" {
-		return !required
-	}
-	return len(value) <= maxLength && utf8.ValidString(value) && !strings.ContainsAny(value, "\r\n\x00")
+// validText reports whether value is non-empty, at most maxLength bytes of
+// UTF-8, and free of line breaks and NUL.
+func validText(value string, maxLength int) bool {
+	return value != "" && len(value) <= maxLength && utf8.ValidString(value) && !strings.ContainsAny(value, "\r\n\x00")
 }
 
 func validVersion(version int) error {
@@ -131,11 +130,11 @@ func (r *RegisterRequest) Validate() error {
 	switch {
 	case !ValidIdentifier(r.RequestID):
 		return errors.New("request ID is invalid")
-	case len(r.EnrollmentToken) < MinEnrollmentToken || len(r.EnrollmentToken) > MaxEnrollmentToken || !validText(r.EnrollmentToken, MaxEnrollmentToken, true):
+	case len(r.EnrollmentToken) < MinEnrollmentToken || len(r.EnrollmentToken) > MaxEnrollmentToken || !validText(r.EnrollmentToken, MaxEnrollmentToken):
 		return errors.New("enrollment token is invalid")
 	case len(r.AgentPublicKey) != ed25519.PublicKeySize:
 		return errors.New("agent public key is invalid")
-	case !validText(r.Hostname, 255, true), !validText(r.AgentVersion, 64, true), !validText(r.OS, 32, true), !validText(r.Architecture, 32, true):
+	case !validText(r.Hostname, 255), !validText(r.AgentVersion, 64), !validText(r.OS, 32), !validText(r.Architecture, 32):
 		return errors.New("agent metadata is invalid")
 	case len(r.Capabilities) > MaxCapabilitiesListed:
 		return errors.New("too many capabilities")
@@ -197,7 +196,7 @@ func (r *RenewRequest) Validate() error {
 	switch {
 	case !ValidIdentifier(r.RequestID), !ValidIdentifier(r.AgentID), !ValidIdentifier(r.LeaseID):
 		return errors.New("renew identifiers are invalid")
-	case !validText(r.AgentVersion, 64, true):
+	case !validText(r.AgentVersion, 64):
 		return errors.New("agent version is invalid")
 	case r.SentAt.IsZero():
 		return errors.New("sent_at is required")
@@ -343,7 +342,6 @@ const (
 	CodeCancelled             = "cancelled"
 	CodeAgentRestarted        = "agent_restarted_during_execution"
 	CodeAgentShutdown         = "agent_shutdown"
-	CodeOperationIDConflict   = "operation_id_reused"
 )
 
 // Result reports operation progress. It is signed by the agent key and

@@ -60,6 +60,18 @@ func newEnv(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	t.Cleanup(controller.Close)
+	// The fake controller reports protocol violations it sees from the agent
+	// (bad signatures, malformed messages); a passing test must cause none.
+	t.Cleanup(func() {
+		for {
+			select {
+			case err := <-controller.Errors():
+				t.Errorf("fake controller reported: %v", err)
+			default:
+				return
+			}
+		}
+	})
 	return &env{t: t, url: url, controller: controller, stateFile: filepath.Join(t.TempDir(), "state", "state.json")}
 }
 
