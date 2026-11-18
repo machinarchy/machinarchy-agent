@@ -1,5 +1,26 @@
 # AI Change Log
 
+## 2026-11-18 — Audit Phase 12: agent connects with its own NATS credential (branch audit/agent-authz)
+
+### Changed
+
+- `internal/app/app.go`:
+  - The agent starts with its stored NATS user JWT while it is valid, and otherwise with the configured bootstrap credential.
+  - After registration or renewal returns a JWT, it reconnects as its own NATS user. The JWT is read from state on every reconnect, the server nonce is signed with the identity key, and the inbox is `_INBOX_AGENT.<id>`.
+  - Renewals store fresh JWTs.
+  - The planned `authentication expired` disconnect logs at info, not warn.
+- `internal/state/state.go`: `Identity.NATSUserJWT`. It is not a secret without the identity key.
+- `internal/fakecontroller`: optional JWT issuing (`IssueNATSCredentials`, `MintAgentJWT`), the controller inbox prefix, extra connect options, and `OperatorMode`, which sets up an embedded NATS server with operator, system and JetStream accounts for tests.
+- `go.mod`: `nats-io/jwt/v2` and `nkeys` become direct requirements (they were already indirect; same versions). This adds no broker, HTTP or persistence dependency.
+- `docs/configuration.md`: the credentials file is the bootstrap credential in operator mode. `docs/runbook.md`: new "NATS credentials" table. The "exit 78" paragraph, which the previous change had placed inside the startup table, is moved below it.
+
+### Verification
+
+- `go test -race ./internal/app/ -run TestOperatorMode`: pass.
+  - `TestOperatorModeAgentUsesItsOwnCredential` (8 s JWT lifetime): the agent switches to its credential, survives the server closing the connection at expiry, and on restart with an expired JWT goes through the bootstrap credential. A traced run showed each of these log lines.
+  - `TestOperatorModePermissions`: 7 denials for another agent's JWT and 5 for the bootstrap credential.
+- `make check`: exit 0 (lint 0 issues in both modules).
+
 ## 2026-11-18 — Audit Phase 12: per-agent NATS credentials in the protocol (branch audit/agent-authz)
 
 ### Changed

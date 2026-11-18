@@ -8,7 +8,9 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -79,25 +81,32 @@ func (a *Agent) PublicKey() ed25519.PublicKey { return a.key.Public().(ed25519.P
 // Run connects, registers if needed and serves commands until ctx is
 // cancelled. It returns nil on a clean shutdown.
 func (a *Agent) Run(ctx context.Context) error {
-	nc, err := a.connect()
+	conn, err := a.connectWithStoredCredential()
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if err := nc.Drain(); err != nil && !errors.Is(err, nats.ErrConnectionClosed) {
-			a.logger.Warn("NATS drain failed", "error", err)
-			nc.Close()
-		}
-		<-closed(nc, a.cfg.NATS.DrainTimeout+time.Second)
-	}()
+	defer func() { a.disconnect(conn.nc) }()
 
-	identity, err := a.ensureRegistered(ctx, nc)
+	identity, err := a.ensureRegistered(ctx, conn.nc)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil
 		}
 		return err
 	}
+	// In operator mode the controller returns a NATS user JWT for this agent.
+	// Switch to it, so the broker limits this connection to the agent's own
+	// subjects, consumer and inbox.
+	if identity.NATSUserJWT != "" && conn.agentID != identity.AgentID {
+		next, err := a.connectAsAgent(identity.AgentID)
+		if err != nil {
+			return err
+		}
+		a.disconnect(conn.nc)
+		conn = next
+		a.logger.Info("connected to NATS with the agent's own credential", "agent_id", identity.AgentID)
+	}
+	nc := conn.nc
 	a.leaseExpiry.Store(identity.LeaseExpiresAt.UnixNano())
 	a.logger.Info("agent registered", "agent_id", identity.AgentID, "host_id", identity.HostID,
 		"capabilities", strings.Join(a.registry.Names(), ","))
@@ -164,7 +173,97 @@ func closed(nc *nats.Conn, timeout time.Duration) <-chan struct{} {
 	return done
 }
 
-func (a *Agent) connect() (*nats.Conn, error) {
+// connection is a NATS connection and, when it authenticates with the agent's
+// NATS user JWT, the agent ID that JWT belongs to.
+type connection struct {
+	nc      *nats.Conn
+	agentID string
+}
+
+func (a *Agent) disconnect(nc *nats.Conn) {
+	if err := nc.Drain(); err != nil && !errors.Is(err, nats.ErrConnectionClosed) {
+		a.logger.Warn("NATS drain failed", "error", err)
+		nc.Close()
+	}
+	<-closed(nc, a.cfg.NATS.DrainTimeout+time.Second)
+}
+
+// jwtRenewalMargin is how long before expiry a stored NATS user JWT is no
+// longer used to start a connection.
+const jwtRenewalMargin = 30 * time.Second
+
+// connectWithStoredCredential uses the stored NATS user JWT while it is
+// valid, and the configured bootstrap credential otherwise (first start, or
+// an agent that was down longer than the JWT lifetime).
+func (a *Agent) connectWithStoredCredential() (connection, error) {
+	if identity := a.store.Snapshot().Identity; identity != nil && identity.NATSUserJWT != "" {
+		if expires, err := jwtExpiry(identity.NATSUserJWT); err == nil && (expires.IsZero() || time.Now().Add(jwtRenewalMargin).Before(expires)) {
+			return a.connectAsAgent(identity.AgentID)
+		}
+		a.logger.Info("stored NATS credential has expired; connecting with the bootstrap credential to renew it")
+	}
+	nc, err := a.connect(a.bootstrapAuth()...)
+	return connection{nc: nc}, err
+}
+
+// connectAsAgent authenticates as the agent's own NATS user: the latest JWT
+// from the state file, and the server nonce signed with the identity key.
+func (a *Agent) connectAsAgent(agentID string) (connection, error) {
+	inbox, err := agentv1.AgentInboxPrefix(agentID)
+	if err != nil {
+		return connection{}, err
+	}
+	credential := func() (string, error) {
+		identity := a.store.Snapshot().Identity
+		if identity == nil || identity.NATSUserJWT == "" {
+			return "", errors.New("no NATS user JWT in agent state")
+		}
+		return identity.NATSUserJWT, nil
+	}
+	sign := func(nonce []byte) ([]byte, error) { return ed25519.Sign(a.key, nonce), nil }
+	nc, err := a.connect(nats.UserJWT(credential, sign), nats.CustomInboxPrefix(inbox))
+	return connection{nc: nc, agentID: agentID}, err
+}
+
+// bootstrapAuth is the configured credential used before the agent has a
+// NATS user JWT.
+func (a *Agent) bootstrapAuth() []nats.Option {
+	c := a.cfg.NATS
+	switch {
+	case c.CredentialsFile != "":
+		return []nats.Option{nats.UserCredentials(c.CredentialsFile)}
+	case c.Token != "":
+		return []nats.Option{nats.Token(c.Token)}
+	case c.Username != "":
+		return []nats.Option{nats.UserInfo(c.Username, c.Password)}
+	}
+	return nil
+}
+
+// jwtExpiry reads the "exp" claim of a JWT without verifying it; the NATS
+// server verifies the credential. A zero time means no expiry.
+func jwtExpiry(token string) (time.Time, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return time.Time{}, errors.New("malformed JWT")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return time.Time{}, fmt.Errorf("decode JWT claims: %w", err)
+	}
+	var claims struct {
+		Expires int64 `json:"exp"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return time.Time{}, fmt.Errorf("decode JWT claims: %w", err)
+	}
+	if claims.Expires == 0 {
+		return time.Time{}, nil
+	}
+	return time.Unix(claims.Expires, 0), nil
+}
+
+func (a *Agent) connect(auth ...nats.Option) (*nats.Conn, error) {
 	c := a.cfg.NATS
 	options := []nats.Option{
 		nats.Name(c.ClientName),
@@ -181,17 +280,16 @@ func (a *Agent) connect() (*nats.Conn, error) {
 		}),
 		nats.ReconnectHandler(func(*nats.Conn) { a.logger.Info("reconnected to NATS") }),
 		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+			if errors.Is(err, nats.ErrAuthExpired) {
+				// Expected once per NATS user JWT lifetime: the server closes
+				// the connection and the client reconnects with the renewed JWT.
+				a.logger.Info("NATS credential expired; reconnecting with the renewed one")
+				return
+			}
 			a.logger.Warn("asynchronous NATS error", "error", err)
 		}),
 	}
-	switch {
-	case c.CredentialsFile != "":
-		options = append(options, nats.UserCredentials(c.CredentialsFile))
-	case c.Token != "":
-		options = append(options, nats.Token(c.Token))
-	case c.Username != "":
-		options = append(options, nats.UserInfo(c.Username, c.Password))
-	}
+	options = append(options, auth...)
 	if c.UsesTLS() {
 		options = append(options, nats.Secure(&tls.Config{MinVersion: tls.VersionTLS12}))
 		if c.CAFile != "" {
@@ -262,7 +360,8 @@ func (a *Agent) register(ctx context.Context, nc *nats.Conn, requestID string) (
 		return state.Identity{}, response.Error
 	}
 	identity := state.Identity{AgentID: response.AgentID, HostID: response.HostID, LeaseID: response.Lease.LeaseID,
-		LeaseExpiresAt: response.Lease.ExpiresAt, HeartbeatIntervalMillis: response.Lease.HeartbeatIntervalMillis}
+		LeaseExpiresAt: response.Lease.ExpiresAt, HeartbeatIntervalMillis: response.Lease.HeartbeatIntervalMillis,
+		NATSUserJWT: response.NATSUserJWT}
 	if err := a.store.Update(func(doc *state.Document) error {
 		doc.Identity = &identity
 		doc.PendingRegistrationID = ""
@@ -304,6 +403,9 @@ func (a *Agent) renew(ctx context.Context, nc *nats.Conn, identity state.Identit
 	identity.LeaseID = response.Lease.LeaseID
 	identity.LeaseExpiresAt = response.Lease.ExpiresAt
 	identity.HeartbeatIntervalMillis = response.Lease.HeartbeatIntervalMillis
+	if response.NATSUserJWT != "" {
+		identity.NATSUserJWT = response.NATSUserJWT
+	}
 	if err := a.store.Update(func(doc *state.Document) error { doc.Identity = &identity; return nil }); err != nil {
 		return state.Identity{}, permanent(fmt.Errorf("persist lease: %w", err))
 	}

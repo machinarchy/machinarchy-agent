@@ -7,6 +7,11 @@ notes and file-level details belong in `ChangeLogAI.md`.
 
 ### Changed
 
+- With NATS in operator (JWT) mode, the agent connects with its own NATS user
+  JWT from the controller after enrolment, limited to its own subjects,
+  consumer and inbox. `MACHINARCHY_AGENT_NATS_CREDENTIALS_FILE` then serves
+  only as the bootstrap credential. Upgrade agents before enabling JWT
+  issuance on the controller.
 - The agent exits with code 78 when the controller rejects its enrollment or
   revokes it. The systemd unit no longer restarts it in that case
   (`RestartPreventExitStatus=78`); other failures still exit 1.

@@ -10,7 +10,7 @@ that no longer exist are rejected rather than ignored.
 | `MACHINARCHY_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` (JSON logs on stdout) |
 | `MACHINARCHY_AGENT_NAME` | `machinarchy-agent` | NATS client name |
 | `MACHINARCHY_AGENT_NATS_URL` | — (required) | Comma-separated `nats://` / `tls://` endpoints |
-| `MACHINARCHY_AGENT_NATS_CREDENTIALS_FILE` | — | NATS `.creds` file, 0600, not a symlink |
+| `MACHINARCHY_AGENT_NATS_CREDENTIALS_FILE` | — | NATS `.creds` file, 0600, not a symlink. In operator (JWT) mode this is the shared **bootstrap** credential: it can only send enrolment and renewal requests. After enrolment the agent connects with its own NATS user JWT from the controller (see [protocol](protocol.md#nats-credentials)) and uses this file again only if that JWT has expired while the agent was down. |
 | `MACHINARCHY_AGENT_NATS_TOKEN` | — | Alternative auth |
 | `MACHINARCHY_AGENT_NATS_USERNAME` / `_PASSWORD` | — | Alternative auth (set both) |
 | `MACHINARCHY_AGENT_NATS_CA_FILE` | system roots | Private CA for `tls://` |

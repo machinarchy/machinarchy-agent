@@ -20,6 +20,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/nats-io/nkeys"
 
 	"github.com/machinarchy/machinarchy-agent/protocol/agentv1"
 )
@@ -30,6 +31,8 @@ type Controller struct {
 	EnrollmentToken string
 	LeaseTTL        time.Duration
 	Heartbeat       time.Duration
+	// issuer, when set, issues per-agent NATS user JWTs (operator mode).
+	issuer atomic.Pointer[NATSIssuer]
 
 	nc   *nats.Conn
 	js   jetstream.JetStream
@@ -48,10 +51,18 @@ type Controller struct {
 	AutoAck atomic.Bool
 }
 
+// NATSIssuer signs per-agent NATS user JWTs with an account signing key.
+type NATSIssuer struct {
+	Signer  nkeys.KeyPair
+	Account string
+	TTL     time.Duration
+}
+
 // Start connects to NATS, provisions the command stream and serves
-// registration, lease renewal and results.
-func Start(ctx context.Context, url string, key ed25519.PrivateKey, enrollmentToken string) (*Controller, error) {
-	nc, err := nats.Connect(url)
+// registration, lease renewal and results. options carry the controller's
+// NATS credentials in operator mode.
+func Start(ctx context.Context, url string, key ed25519.PrivateKey, enrollmentToken string, options ...nats.Option) (*Controller, error) {
+	nc, err := nats.Connect(url, append(options, nats.CustomInboxPrefix(agentv1.ControllerInboxPrefix))...)
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +178,25 @@ func (c *Controller) onRegister(msg *nats.Msg) {
 		return
 	}
 	response.AgentID, response.HostID, response.Lease = agentID, "host-"+agentID, c.lease()
+	if response.NATSUserJWT, err = c.mint(ed25519.PublicKey(request.AgentPublicKey), agentID); err != nil {
+		c.report(err)
+		response.AgentID, response.HostID, response.Lease, response.NATSUserJWT = "", "", nil, ""
+		response.Error = &agentv1.Error{Code: agentv1.ErrorUnavailable, Retryable: true}
+	}
 	c.reply(msg, agentv1.KindRegisterResponse, response)
+}
+
+// IssueNATSCredentials makes registration and renewal responses carry a
+// per-agent NATS user JWT.
+func (c *Controller) IssueNATSCredentials(issuer *NATSIssuer) { c.issuer.Store(issuer) }
+
+// mint returns a NATS user JWT for the agent, or "" without an issuer.
+func (c *Controller) mint(key ed25519.PublicKey, agentID string) (string, error) {
+	issuer := c.issuer.Load()
+	if issuer == nil {
+		return "", nil
+	}
+	return MintAgentJWT(issuer.Signer, issuer.Account, key, agentID, issuer.TTL)
 }
 
 // provision creates the agent's durable pull consumer.
@@ -199,6 +228,13 @@ func (c *Controller) onRenew(msg *nats.Msg) {
 		response.Error = &agentv1.Error{Code: agentv1.ErrorLeaseRevoked}
 	} else {
 		response.Lease = c.lease()
+		key, _ := c.keyFor(request.AgentID)
+		jwt, err := c.mint(key, request.AgentID)
+		if err != nil {
+			c.report(err)
+			return
+		}
+		response.NATSUserJWT = jwt
 	}
 	c.reply(msg, agentv1.KindRenewResponse, response)
 }
