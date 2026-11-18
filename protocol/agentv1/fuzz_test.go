@@ -90,7 +90,7 @@ func FuzzParsePublicKey(f *testing.F) {
 func FuzzDecodeStrict(f *testing.F) {
 	f.Add([]byte(`{"service":"nginx"}`))
 	f.Add([]byte(`{"service":"nginx"} {}`))
-	f.Fuzz(func(t *testing.T, data []byte) {
+	f.Fuzz(func(_ *testing.T, data []byte) {
 		var request ServiceStatusRequest
 		_ = DecodeStrict(data, &request)
 	})

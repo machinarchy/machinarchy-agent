@@ -22,7 +22,9 @@
 
 ### Verification
 
-- `make test`, `make lint` (0 issues), `make tidy-check` in both modules.
+- `make test`, `make lint`, `make tidy-check` in both modules. The first fuzz commit
+  left one `revive` unused-parameter finding in `fuzz_test.go`; fixed in the
+  next commit, after which `make lint` reports 0 issues in both modules.
 - `internal/state/health_test.go` covers missing, unenrolled, live and expired states.
 - Each fuzz target ran for 10s without findings; `make fuzz FUZZTIME=2s` passes.
 
