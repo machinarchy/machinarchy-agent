@@ -40,6 +40,9 @@ services:
     security_opt:
       - no-new-privileges:true
     stop_grace_period: 30s
+    # Compose cannot skip restarts by exit code. After a rejection or
+    # revocation (exit 78) Docker keeps restarting with a growing delay;
+    # stop the service until an operator re-enrols the host.
     restart: unless-stopped
 
 volumes:

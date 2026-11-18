@@ -13,6 +13,9 @@ Group=machagent
 ExecStart=/usr/local/bin/machinarchy-agent
 Restart=on-failure
 RestartSec=5s
+# Exit 78: the controller rejected the token or revoked this agent. A restart
+# cannot fix that; an operator must issue a new token or key.
+RestartPreventExitStatus=78
 # Must exceed MACHINARCHY_AGENT_SHUTDOWN_TIMEOUT + MACHINARCHY_AGENT_DRAIN_TIMEOUT.
 TimeoutStopSec=35s
 KillSignal=SIGTERM

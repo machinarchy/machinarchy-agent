@@ -282,7 +282,7 @@ func TestEnrollmentRejectedStopsAgent(t *testing.T) {
 	select {
 	case err := <-r.done:
 		r.cancel = nil
-		if err == nil || !strings.Contains(err.Error(), agentv1.ErrorEnrollmentRejected) {
+		if err == nil || !strings.Contains(err.Error(), agentv1.ErrorEnrollmentRejected) || !errors.Is(err, ErrEnrollmentRejected) || !NeedsOperator(err) {
 			t.Fatalf("Run() = %v, want enrollment rejection", err)
 		}
 	case <-time.After(10 * time.Second):
@@ -316,7 +316,7 @@ func TestRevokedLeaseClearsIdentity(t *testing.T) {
 	select {
 	case err := <-r.done:
 		r.cancel = nil
-		if !errors.Is(err, ErrReenrollmentRequired) {
+		if !errors.Is(err, ErrReenrollmentRequired) || !NeedsOperator(err) {
 			t.Fatalf("Run() = %v, want ErrReenrollmentRequired", err)
 		}
 	case <-time.After(15 * time.Second): // heartbeat is 5s

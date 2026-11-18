@@ -11,7 +11,13 @@ machinarchy's `docs/runbook.md`.
 | `invalid configuration: ...` (exit 2) | A setting is missing or invalid. | `machinarchy-agent --check-config` names it. Production requires NATS authentication and TLS. |
 | `unsupported settings are set (remove them)` | A setting from an older version is still set. | Remove the listed variables. |
 | `agent is not registered and no enrollment token is configured` | No identity in the state file and no token. | Set `MACHINARCHY_AGENT_ENROLLMENT_TOKEN[_FILE]`. |
-| `controller rejected request: enrollment_rejected` | Wrong token, or this key was revoked. | Use the controller's token. A revoked host is re-admitted only with a new key: stop the agent, delete the state file, start again. |
+| `controller rejected enrollment ...` (exit 78) | Wrong token, or this key was revoked. | Use the controller's token. A revoked host is re-admitted only with a new key: stop the agent, delete the state file, start again. |
+| `controller rejected this agent's identity ...` (exit 78) | An owner revoked the agent, or the controller no longer knows it; the identity is cleared. | Intended after a revocation. To re-admit the host, delete the state file and enrol it with a new token. |
+
+Exit code 78 means a restart cannot help. The systemd unit does not restart
+on it (`RestartPreventExitStatus=78`). Docker's restart policy cannot tell
+exit codes apart, so under compose stop the service (`docker compose stop`)
+until the host is re-enrolled. Every other failure exits 1 and is restarted.
 | state file errors (`permission`, `owner-only`) | The state directory is not `0700` and owned by the agent user. | Fix ownership and mode; never make it readable by others (it holds the private key). |
 
 ## Running but unhealthy

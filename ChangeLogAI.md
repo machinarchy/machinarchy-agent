@@ -1,5 +1,34 @@
 # AI Change Log
 
+## 2026-11-18 — Audit follow-up: exit code 78 after rejection (branch audit/followup)
+
+### Changed
+
+- `internal/app/app.go`: new `ErrEnrollmentRejected` (wraps the controller's
+  `enrollment_rejected` error) and `NeedsOperator(err)`, true for it and for
+  `ErrReenrollmentRequired` (lease revoked or agent unknown).
+- `cmd/machinarchy-agent/main.go`: exits 78 (`EX_CONFIG`) when
+  `NeedsOperator` is true, 1 for every other runtime error. The log line
+  carries `exit_code`.
+- `deployments/systemd/machinarchy-agent.service`: `RestartPreventExitStatus=78`,
+  so a revoked or rejected agent stays stopped instead of re-enrolling until
+  the start limit (5 in 5 min) fails the unit.
+- `compose.yaml`: comment that Docker restart policies cannot skip an exit
+  code; `docs/runbook.md` documents exit 78 and what to do under compose.
+
+Reason: AUDIT/09 F9-02. The Phase 9 live run showed a revoked agent exiting 1,
+which supervisors restart.
+
+### Verification
+
+- `go test -race -count=1 ./cmd/... ./internal/app/`: pass. New
+  `TestExitCodeStopsSupervisorRestartsOnlyWhenOperatorMustAct`;
+  `TestEnrollmentRejectedStopsAgent` and `TestRevokedLeaseClearsIdentity`
+  now also assert `NeedsOperator`.
+- `make check`: exit 0 (lint 0 issues).
+- Not verified: `systemd-analyze verify` (not installed on the review host;
+  the script skips itself) and a real systemd restart.
+
 ## 2026-11-18 — Audit Phase 8: protocol module, fuzzing (branch audit/ops)
 
 ### Changed

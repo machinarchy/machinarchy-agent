@@ -76,9 +76,21 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) in
 	defer stop()
 	logger.Info("agent starting", "state_file", cfg.StateFile, "environment", cfg.Environment)
 	if err := agent.Run(ctx); err != nil {
-		logger.Error("agent stopped with an error", "error", err)
-		return 1
+		logger.Error("agent stopped with an error", "error", err, "exit_code", exitCode(err))
+		return exitCode(err)
 	}
 	logger.Info("agent stopped")
 	return 0
+}
+
+// exitNeedsOperator (EX_CONFIG) marks an exit that a restart cannot fix: the
+// controller rejected the token or revoked this agent. The systemd unit lists
+// it in RestartPreventExitStatus so a revoked agent stays stopped.
+const exitNeedsOperator = 78
+
+func exitCode(err error) int {
+	if app.NeedsOperator(err) {
+		return exitNeedsOperator
+	}
+	return 1
 }

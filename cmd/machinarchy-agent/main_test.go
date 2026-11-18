@@ -3,10 +3,13 @@ package main
 import (
 	"bytes"
 	"crypto/ed25519"
+	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/machinarchy/machinarchy-agent/internal/app"
 	"github.com/machinarchy/machinarchy-agent/protocol/agentv1"
 )
 
@@ -50,5 +53,21 @@ func TestFlags(t *testing.T) {
 	}
 	if code := run([]string{"--unknown"}, &out, &errOut, env); code != 2 {
 		t.Fatalf("unknown flag = %d", code)
+	}
+}
+
+func TestExitCodeStopsSupervisorRestartsOnlyWhenOperatorMustAct(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want int
+	}{
+		{app.ErrReenrollmentRequired, exitNeedsOperator},
+		{fmt.Errorf("lease: %w", app.ErrReenrollmentRequired), exitNeedsOperator},
+		{fmt.Errorf("%w (%w)", app.ErrEnrollmentRejected, errors.New("enrollment_rejected")), exitNeedsOperator},
+		{errors.New("persist lease: disk full"), 1},
+	} {
+		if got := exitCode(tc.err); got != tc.want {
+			t.Errorf("exitCode(%v) = %d, want %d", tc.err, got, tc.want)
+		}
 	}
 }

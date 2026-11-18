@@ -34,6 +34,17 @@ import (
 // agent. The stored identity is cleared; a new enrollment token is needed.
 var ErrReenrollmentRequired = errors.New("controller rejected this agent's identity; configure a new enrollment token to re-enroll")
 
+// ErrEnrollmentRejected means the controller refused to enrol this agent: the
+// token is wrong, or this key was revoked. Retrying cannot succeed.
+var ErrEnrollmentRejected = errors.New("controller rejected enrollment; check the enrollment token, or re-enrol a revoked host with a new key")
+
+// NeedsOperator reports whether err ends the agent until an operator acts
+// (new token, new key). The process exit code tells supervisors not to
+// restart it.
+func NeedsOperator(err error) bool {
+	return errors.Is(err, ErrReenrollmentRequired) || errors.Is(err, ErrEnrollmentRejected)
+}
+
 // Agent is one agent process.
 type Agent struct {
 	cfg      config.Config
@@ -242,7 +253,10 @@ func (a *Agent) register(ctx context.Context, nc *nats.Conn, requestID string) (
 		return state.Identity{}, errors.New("registration response does not match the request")
 	}
 	if response.Error != nil {
-		if response.Error.Code == agentv1.ErrorEnrollmentRejected || !response.Error.Retryable {
+		if response.Error.Code == agentv1.ErrorEnrollmentRejected {
+			return state.Identity{}, permanent(fmt.Errorf("%w (%w)", ErrEnrollmentRejected, response.Error))
+		}
+		if !response.Error.Retryable {
 			return state.Identity{}, permanent(response.Error)
 		}
 		return state.Identity{}, response.Error

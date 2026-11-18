@@ -5,6 +5,12 @@ notes and file-level details belong in `ChangeLogAI.md`.
 
 ## Unreleased
 
+### Changed
+
+- The agent exits with code 78 when the controller rejects its enrollment or
+  revokes it. The systemd unit no longer restarts it in that case
+  (`RestartPreventExitStatus=78`); other failures still exit 1.
+
 ### Added
 
 - `--healthcheck`: exits 0 when the agent is enrolled and its lease is live;
