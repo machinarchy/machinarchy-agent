@@ -34,6 +34,12 @@
   and PR builds check the version output, the non-root user and the health
   check.
 
+- `README.md`: machinarchy's agent gateway is now the controller side; quick
+  start against it; build, test, configure, deploy and operate sections
+  (health check, logs, shutdown). The token is no longer called one-time.
+- `docs/runbook.md`: startup failures, health, ignored commands, crashes,
+  revocation.
+
 ### Verification
 
 - `make test`, `make lint`, `make tidy-check` in both modules.

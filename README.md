@@ -21,8 +21,8 @@ controller ──signed commands (JetStream)──▶ agent ──▶ capabiliti
 
 - **Enrollment and identity.**
   - On first start the agent creates an Ed25519 key.
-  - It enrolls with a one-time token, then renews a lease on the controller's
-    cadence.
+  - It enrolls with an enrollment token, then renews a lease on the
+    controller's cadence. A revoked agent is refused when it tries again.
   - The controller's public key is pinned in configuration. Commands and
     responses not signed by it are rejected.
 - **At-most-once execution.**
@@ -35,42 +35,76 @@ controller ──signed commands (JetStream)──▶ agent ──▶ capabiliti
   republished until the controller acknowledges them.
 
 The wire contract is [`protocol/agentv1`](protocol/agentv1) (see
-[docs/protocol.md](docs/protocol.md)). `internal/fakecontroller` is a working
-reference implementation of the controller side.
+[docs/protocol.md](docs/protocol.md)). It is its own standard-library-only Go
+module, `github.com/machinarchy/machinarchy-agent/protocol`, which the
+machinarchy controller imports. machinarchy's agent gateway is the production
+controller side; `internal/fakecontroller` is the in-repository reference used
+by the integration tests.
 
 ## Quick start (development)
 
+Run machinarchy with its agent gateway enabled (see its
+`docs/operations.md#agent-gateway`), then point the agent at the same NATS:
+
 ```bash
 docker compose -f docker-compose.yml up -d          # local NATS with JetStream
-cp .env.example .env                                # set MACHINARCHY_AGENT_CONTROLLER_PUBLIC_KEY
+cp .env.example .env
+# MACHINARCHY_AGENT_NATS_URL=nats://127.0.0.1:4222
+# MACHINARCHY_AGENT_CONTROLLER_PUBLIC_KEY=<GET /api/v1/agents/controller-key>
+# MACHINARCHY_AGENT_ENROLLMENT_TOKEN_FILE=<the controller's enrollment token file>
 set -a; . ./.env; set +a
 go run ./cmd/machinarchy-agent --check-config
 go run ./cmd/machinarchy-agent
 ```
 
-The agent needs a controller that implements the protocol. Until machinarchy
-does, the integration tests show the full flow end to end:
+The agent then appears in `GET /api/v1/agents`, and
+`POST /api/v1/agents/{id}/invoke {"capability":"runtime.info"}` runs a
+capability through it.
+
+## Build
 
 ```bash
-go test -race ./internal/app/...
-```
-
-## Build and test
-
-```bash
-make check        # fmt, tidy, vet (incl. linux/amd64+arm64), race tests, lint, build, deployment checks
-make test-race    # unit + integration tests against an embedded nats-server
-make docker-build
+make build          # bin/machinarchy-agent, reproducible (-trimpath, -buildvcs=false, commit-time BUILD_TIME)
+make docker-build   # digest-pinned bases, non-root (10001), HEALTHCHECK
+bin/machinarchy-agent --version
 ```
 
 Requires Go 1.27 (pinned toolchain `go1.27.4`).
 
-## Deploy
+## Test
+
+```bash
+make check          # fmt, tidy, vet (host, linux/amd64, linux/arm64), race tests, lint, build, deployment checks
+make test-race      # both modules; integration tests run against an embedded nats-server
+make coverage       # race + coverage.out
+make fuzz           # protocol decoder fuzz targets for FUZZTIME (default 30s)
+make vuln gosec     # govulncheck (both modules) and gosec
+```
+
+The cross-repository end-to-end test (a real agent enrolling with a real
+machinarchy) lives in machinarchy's `test/e2e`; machinarchy's CI runs it.
+
+## Configure
+
+Environment variables only, validated at startup (`--check-config`); keys and
+tokens may come from files. Required: `MACHINARCHY_AGENT_NATS_URL`,
+`MACHINARCHY_AGENT_CONTROLLER_PUBLIC_KEY[_FILE]`, and an enrollment token on
+first start. Production (the default) requires NATS authentication and TLS.
+Full reference: [docs/configuration.md](docs/configuration.md).
+
+## Deploy and operate
 
 - systemd: [docs/deployment/systemd.md](docs/deployment/systemd.md)
 - Docker: [docs/deployment/docker.md](docs/deployment/docker.md)
-- Configuration reference: [docs/configuration.md](docs/configuration.md)
-- Security model: [docs/security.md](docs/security.md)
+- Health: `machinarchy-agent --healthcheck` exits 0 while the agent is
+  enrolled and holds an unexpired lease (the image's `HEALTHCHECK`). The agent
+  serves no HTTP.
+- Logs: JSON on stdout; failures carry the cause under `error`.
+- Shutdown: SIGTERM gives running operations `MACHINARCHY_AGENT_SHUTDOWN_TIMEOUT`
+  (default 20s), then drains NATS within `MACHINARCHY_AGENT_DRAIN_TIMEOUT`;
+  anything cancelled is reported `unknown`, never replayed.
+- Failure modes: [docs/runbook.md](docs/runbook.md). Security model:
+  [docs/security.md](docs/security.md).
 
 ## Layout
 
