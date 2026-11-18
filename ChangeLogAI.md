@@ -27,6 +27,13 @@
 - `Makefile`: `BUILD_TIME` is the commit time (reproducible builds), `build`
   adds `-buildvcs=false`, `docker-build` uses buildx.
 
+- `.github/workflows/ci.yml`: pinned golangci-lint v2.15.0, govulncheck
+  v1.1.4 and gosec v2.22.4 (was `latest`); lint and govulncheck cover both
+  modules through `make`; adds race tests, a coverage artifact, gosec and a
+  20s fuzz smoke. `.github/workflows/docker.yml`: commit-time `BUILD_TIME`,
+  and PR builds check the version output, the non-root user and the health
+  check.
+
 ### Verification
 
 - `make test`, `make lint`, `make tidy-check` in both modules.

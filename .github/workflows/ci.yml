@@ -12,9 +12,14 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  GOLANGCI_LINT_VERSION: v2.15.0
+  GOVULNCHECK_VERSION: v1.1.4
+  GOSEC_VERSION: v2.22.4
+
 jobs:
   verify:
-    name: Go verification
+    name: Build, vet, lint, race tests, coverage
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -28,34 +33,74 @@ jobs:
           go-version-file: go.mod
           cache: true
           cache-dependency-path: |
-            go.mod
             go.sum
+            protocol/go.mod
 
-      - name: Download and verify modules
-        run: |
-          go mod download
-          make tidy-check
+      - name: Modules are tidy and verified (agent and protocol)
+        run: make tidy-check
 
-      - name: Check formatting
+      - name: Formatting
         run: make fmt-check
 
-      - name: Vet (host, linux/amd64, linux/arm64)
+      - name: Vet (host, linux/amd64, linux/arm64; both modules)
         run: make vet
-
-      - name: Unit and integration tests with race detector
-        run: make test-race
-
-      - name: Lint
-        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
-        with:
-          version: latest
-
-      - name: Vulnerability scan
-        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
       - name: Build
         run: make build
 
+      - name: Race tests (both modules)
+        run: make test-race
+
+      - name: Coverage
+        run: make coverage
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4 # tag: no verified SHA available offline; pin with Dependabot
+        with:
+          name: agent-coverage
+          path: coverage.out
+          retention-days: 14
+
+      - name: Install golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+          install-only: true
+
+      - name: Lint (both modules)
+        run: make lint
+
       - name: Deployment packaging checks
         run: make deployment-check
 
+  security:
+    name: govulncheck, gosec, fuzz smoke
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            protocol/go.mod
+
+      - name: Install scanners
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}
+          go install github.com/securego/gosec/v2/cmd/gosec@${GOSEC_VERSION}
+
+      - name: govulncheck (both modules)
+        run: make vuln
+
+      - name: gosec
+        run: gosec -quiet -exclude-generated ./...
+
+      - name: Fuzz the protocol decoders (short)
+        run: make fuzz FUZZTIME=20s
