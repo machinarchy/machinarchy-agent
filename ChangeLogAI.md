@@ -1,5 +1,18 @@
 # AI Change Log
 
+## 2026-11-18 — Audit Phase 12: per-agent NATS credentials in the protocol (branch audit/agent-authz)
+
+### Changed
+
+- `protocol/agentv1/messages.go`: `RegisterResponse` and `RenewResponse` gain optional `nats_user_jwt` (shape-checked, at most 8 KiB; forbidden on error responses).
+- `protocol/agentv1/subjects.go`: `AgentInboxRoot` and `AgentInboxPrefix(agentID)` (`_INBOX_AGENT.<id>`), `ControllerInboxPrefix` (`_INBOX_CONTROLLER`), `BootstrapInboxRoot`, and the NATS permission lists `AgentPermissions(agentID)` and `BootstrapPermissions()`, so controller and agent share one definition (machinarchy AUDIT/10 Phase 12, M-10).
+- New golden fixtures `register_response.json` and `renew_response.json`; the existing fixtures are unchanged.
+- `docs/protocol.md`: new "NATS credentials" section, with the compatibility note. `ProtocolVersion` stays 1: the field is additive and sent only when the controller issues JWTs, but agents built earlier reject responses that carry it (strict decoding), so agents must be upgraded first.
+
+### Verification
+
+- `cd protocol && go test ./agentv1 -run Golden -update`, then `go test ./...`: pass. New `TestNATSUserJWTShape` (8 cases) and `TestAgentPermissionsAreScopedToOneAgent`.
+
 ## 2026-11-18 — Audit follow-up: exit code 78 after rejection (branch audit/followup)
 
 ### Changed

@@ -211,6 +211,16 @@ func TestGoldenWireFormat(t *testing.T) {
 	completed := fixedTime.Add(time.Second)
 	fixtures := map[string]func() ([]byte, error){
 		"command.json": func() ([]byte, error) { return Seal(controller, KindCommand, sampleCommand()) },
+		"register_response.json": func() ([]byte, error) {
+			return Seal(controller, KindRegisterResponse, &RegisterResponse{ProtocolVersion: 1, RequestID: "req-1", AgentID: "agent-1",
+				HostID: "host-1", Lease: &Lease{LeaseID: "lease-1", ExpiresAt: fixedTime.Add(time.Minute), HeartbeatIntervalMillis: 15000},
+				NATSUserJWT: sampleNATSUserJWT})
+		},
+		"renew_response.json": func() ([]byte, error) {
+			return Seal(controller, KindRenewResponse, &RenewResponse{ProtocolVersion: 1, RequestID: "req-2", AgentID: "agent-1",
+				Lease:       &Lease{LeaseID: "lease-2", ExpiresAt: fixedTime.Add(2 * time.Minute), HeartbeatIntervalMillis: 15000},
+				NATSUserJWT: sampleNATSUserJWT})
+		},
 		"result.json": func() ([]byte, error) {
 			return Seal(agent, KindResult, &Result{ProtocolVersion: 1, AgentID: "agent-1", OperationID: "op-1",
 				Capability: CapabilityServiceStatus, Status: StatusSucceeded, Output: json.RawMessage(`{"service":"nginx.service"}`),
@@ -262,5 +272,70 @@ func TestOpenFromAgentUsesRegisteredKey(t *testing.T) {
 	delete(keys, "agent-9")
 	if err := OpenFromAgent(KindResult, raw, MaxResultMessageBytes, lookup, &result); !errors.Is(err, ErrInvalidSignature) {
 		t.Fatalf("unknown agent error = %v", err)
+	}
+}
+
+// sampleNATSUserJWT has the shape of a NATS user JWT; agentv1 checks only the
+// shape, the NATS server verifies it.
+const sampleNATSUserJWT = "eyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkifQ.eyJzdWIiOiJVQUJDIn0.c2lnbmF0dXJl"
+
+func TestNATSUserJWTShape(t *testing.T) {
+	lease := &Lease{LeaseID: "lease-1", ExpiresAt: fixedTime.Add(time.Minute), HeartbeatIntervalMillis: 15000}
+	for name, tc := range map[string]struct {
+		token string
+		ok    bool
+	}{
+		"absent":           {"", true},
+		"well formed":      {sampleNATSUserJWT, true},
+		"two segments":     {"a.b", false},
+		"empty segment":    {"a..c", false},
+		"padding":          {"a.b=.c", false},
+		"whitespace":       {"a.b c.d", false},
+		"oversized":        {strings.Repeat("a", MaxNATSUserJWTBytes) + ".b.c", false},
+		"standard base64+": {"a+b.c.d", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			register := &RegisterResponse{ProtocolVersion: 1, RequestID: "r", AgentID: "a", HostID: "h", Lease: lease, NATSUserJWT: tc.token}
+			renew := &RenewResponse{ProtocolVersion: 1, RequestID: "r", AgentID: "a", Lease: lease, NATSUserJWT: tc.token}
+			if got := register.Validate() == nil; got != tc.ok {
+				t.Errorf("register valid = %v, want %v", got, tc.ok)
+			}
+			if got := renew.Validate() == nil; got != tc.ok {
+				t.Errorf("renew valid = %v, want %v", got, tc.ok)
+			}
+		})
+	}
+	rejected := &RegisterResponse{ProtocolVersion: 1, RequestID: "r", NATSUserJWT: sampleNATSUserJWT,
+		Error: &Error{Code: ErrorEnrollmentRejected}}
+	if rejected.Validate() == nil {
+		t.Fatal("an error response carrying a credential was accepted")
+	}
+}
+
+func TestAgentPermissionsAreScopedToOneAgent(t *testing.T) {
+	permissions, err := AgentPermissions("agent-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, subject := range append(append([]string{}, permissions.Publish...), permissions.Subscribe...) {
+		if strings.Contains(subject, "*") {
+			t.Errorf("permission %q uses a single-token wildcard", subject)
+		}
+		if strings.HasSuffix(subject, ".>") && !strings.Contains(subject, "agent-1") {
+			t.Errorf("permission %q is not scoped to agent-1", subject)
+		}
+	}
+	if len(permissions.Subscribe) != 1 || permissions.Subscribe[0] != AgentInboxRoot+".agent-1.>" {
+		t.Fatalf("subscribe = %v", permissions.Subscribe)
+	}
+	if _, err := AgentPermissions("agent.1"); err == nil {
+		t.Fatal("an agent ID with a dot was accepted")
+	}
+	bootstrap := BootstrapPermissions()
+	for _, subject := range bootstrap.Subscribe {
+		if strings.HasPrefix(AgentInboxRoot+".x", strings.TrimSuffix(subject, ">")) ||
+			strings.HasPrefix(ControllerInboxPrefix+".x", strings.TrimSuffix(subject, ">")) {
+			t.Fatalf("bootstrap subscription %q covers agent or controller inboxes", subject)
+		}
 	}
 }

@@ -157,7 +157,12 @@ type RegisterResponse struct {
 	AgentID         string `json:"agent_id,omitempty"`
 	HostID          string `json:"host_id,omitempty"`
 	Lease           *Lease `json:"lease,omitempty"`
-	Error           *Error `json:"error,omitempty"`
+	// NATSUserJWT, when present, is a NATS user JWT for the agent's own
+	// identity key (its Ed25519 public key as a NATS user nkey). The agent
+	// reconnects with it, limited to AgentPermissions. Controllers send it only
+	// when NATS runs in operator (JWT) mode.
+	NATSUserJWT string `json:"nats_user_jwt,omitempty"`
+	Error       *Error `json:"error,omitempty"`
 }
 
 func (r *RegisterResponse) Validate() error {
@@ -168,13 +173,16 @@ func (r *RegisterResponse) Validate() error {
 		return errors.New("request ID is invalid")
 	}
 	if r.Error != nil {
-		if r.AgentID != "" || r.HostID != "" || r.Lease != nil {
+		if r.AgentID != "" || r.HostID != "" || r.Lease != nil || r.NATSUserJWT != "" {
 			return errors.New("error response must not carry an identity")
 		}
 		return r.Error.validate()
 	}
 	if !ValidIdentifier(r.AgentID) || !ValidIdentifier(r.HostID) || r.Lease == nil {
 		return errors.New("registration identity is incomplete")
+	}
+	if err := validNATSUserJWT(r.NATSUserJWT); err != nil {
+		return err
 	}
 	return r.Lease.validate()
 }
@@ -210,7 +218,9 @@ type RenewResponse struct {
 	RequestID       string `json:"request_id"`
 	AgentID         string `json:"agent_id"`
 	Lease           *Lease `json:"lease,omitempty"`
-	Error           *Error `json:"error,omitempty"`
+	// NATSUserJWT is a fresh credential (see RegisterResponse.NATSUserJWT).
+	NATSUserJWT string `json:"nats_user_jwt,omitempty"`
+	Error       *Error `json:"error,omitempty"`
 }
 
 func (r *RenewResponse) Validate() error {
@@ -221,15 +231,42 @@ func (r *RenewResponse) Validate() error {
 		return errors.New("renew response identifiers are invalid")
 	}
 	if r.Error != nil {
-		if r.Lease != nil {
-			return errors.New("error response must not carry a lease")
+		if r.Lease != nil || r.NATSUserJWT != "" {
+			return errors.New("error response must not carry a lease or credential")
 		}
 		return r.Error.validate()
 	}
 	if r.Lease == nil {
 		return errors.New("lease is required")
 	}
+	if err := validNATSUserJWT(r.NATSUserJWT); err != nil {
+		return err
+	}
 	return r.Lease.validate()
+}
+
+// MaxNATSUserJWTBytes bounds the credential carried in responses.
+const MaxNATSUserJWTBytes = 8192
+
+// validNATSUserJWT checks the shape only (three base64url segments). The NATS
+// server verifies the signature and permissions when the agent connects.
+func validNATSUserJWT(token string) error {
+	if token == "" {
+		return nil
+	}
+	if len(token) > MaxNATSUserJWTBytes {
+		return errors.New("NATS user JWT is too large")
+	}
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return errors.New("NATS user JWT is malformed")
+	}
+	for _, part := range parts {
+		if part == "" || strings.Trim(part, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_") != "" {
+			return errors.New("NATS user JWT is malformed")
+		}
+	}
+	return nil
 }
 
 // CommandType selects the command semantics.
