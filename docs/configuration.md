@@ -15,7 +15,7 @@ that no longer exist are rejected rather than ignored.
 | `MACHINARCHY_AGENT_NATS_USERNAME` / `_PASSWORD` | — | Alternative auth (set both) |
 | `MACHINARCHY_AGENT_NATS_CA_FILE` | system roots | Private CA for `tls://` |
 | `MACHINARCHY_AGENT_NATS_CERT_FILE` / `_KEY_FILE` | — | Client certificate (mTLS); the key file must be 0600 |
-| `MACHINARCHY_AGENT_CONTROLLER_PUBLIC_KEY` or `_FILE` | — (required) | Base64 Ed25519 key that signs commands and responses |
+| `MACHINARCHY_AGENT_CONTROLLER_PUBLIC_KEY` or `_FILE` | — (required) | Base64 Ed25519 key that signs commands and responses. During a [signing-key rotation](runbook.md#controller-signing-key-rotation), two keys (current and next) separated by a comma, or one per line in the file |
 | `MACHINARCHY_AGENT_ENROLLMENT_TOKEN` or `_FILE` | — | Single-use token issued for this host by a machinarchy owner (`POST /api/v1/agents/enrollment-tokens`). Needed only until the first registration; the file must be 0600 |
 | `MACHINARCHY_AGENT_STATE_FILE` | `/var/lib/machinarchy-agent/state.json` (dev: `./data/agent/state.json`) | The directory is created 0700 and the file is 0600 |
 | `MACHINARCHY_AGENT_CONNECT_TIMEOUT` | `5s` | |

@@ -2,6 +2,7 @@ package agentv1
 
 import (
 	"bytes"
+	"crypto"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
@@ -70,6 +71,21 @@ func Seal(key ed25519.PrivateKey, kind Kind, body Body) ([]byte, error) {
 	if len(key) != ed25519.PrivateKeySize {
 		return nil, errors.New("signing key must be an Ed25519 private key")
 	}
+	return SealWith(key, kind, body)
+}
+
+// SealWith is Seal with any Ed25519 crypto.Signer, such as a key held in a
+// KMS. The signature is checked against the signer's public key before the
+// envelope is returned, so a misbehaving signer cannot emit messages that
+// agents would reject. The wire format is the same as Seal's.
+func SealWith(signer crypto.Signer, kind Kind, body Body) ([]byte, error) {
+	if signer == nil {
+		return nil, errors.New("a signer is required")
+	}
+	public, ok := signer.Public().(ed25519.PublicKey)
+	if !ok || len(public) != ed25519.PublicKeySize {
+		return nil, errors.New("signing key must be an Ed25519 key")
+	}
 	if err := body.Validate(); err != nil {
 		return nil, fmt.Errorf("seal %s: %w", kind, err)
 	}
@@ -77,25 +93,51 @@ func Seal(key ed25519.PrivateKey, kind Kind, body Body) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("encode %s body: %w", kind, err)
 	}
+	input := signingInput(kind, encoded)
+	signature, err := signer.Sign(nil, input, crypto.Hash(0)) // pure Ed25519 over the message
+	if err != nil {
+		return nil, fmt.Errorf("sign %s: %w", kind, err)
+	}
+	if !ed25519.Verify(public, input, signature) {
+		return nil, fmt.Errorf("sign %s: the signer returned an invalid signature", kind)
+	}
 	return json.Marshal(Envelope{
 		Version:   ProtocolVersion,
 		Kind:      kind,
 		Body:      encoded,
-		Signature: ed25519.Sign(key, signingInput(kind, encoded)),
+		Signature: signature,
 	})
 }
 
 // Open verifies raw against key, decodes the body strictly into out and
 // validates it. It never returns body content when verification fails.
 func Open(key ed25519.PublicKey, kind Kind, raw []byte, limit int, out Body) error {
+	return OpenAny([]ed25519.PublicKey{key}, kind, raw, limit, out)
+}
+
+// OpenAny is Open for a receiver that trusts several keys, such as an agent
+// pinning the controller's current and next key during a rotation. The
+// message is accepted if any key verifies it. The wire format is unchanged.
+func OpenAny(keys []ed25519.PublicKey, kind Kind, raw []byte, limit int, out Body) error {
 	envelope, err := decodeEnvelope(kind, raw, limit)
 	if err != nil {
 		return err
 	}
-	if len(key) != ed25519.PublicKeySize {
-		return errors.New("verification key must be an Ed25519 public key")
+	if len(keys) == 0 {
+		return errors.New("at least one verification key is required")
 	}
-	if !ed25519.Verify(key, signingInput(kind, envelope.Body), envelope.Signature) {
+	input := signingInput(kind, envelope.Body)
+	verified := false
+	for _, key := range keys {
+		if len(key) != ed25519.PublicKeySize {
+			return errors.New("verification key must be an Ed25519 public key")
+		}
+		if ed25519.Verify(key, input, envelope.Signature) {
+			verified = true
+			break
+		}
+	}
+	if !verified {
 		return ErrInvalidSignature
 	}
 	return decodeBody(envelope.Body, out)

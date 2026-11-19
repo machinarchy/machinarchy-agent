@@ -45,13 +45,33 @@ signals over time (`docs/configuration.md#metrics`).
 ## Commands are ignored
 
 - `discarding unauthenticated or malformed command`: the command was not
-  signed by the pinned controller key. After rotating the controller key,
-  every agent needs the new `MACHINARCHY_AGENT_CONTROLLER_PUBLIC_KEY`.
+  signed by a pinned controller key. The controller switched to a key this
+  agent does not pin: follow the rotation steps below, pinning both keys.
 - `discarding command` with an expiry or replay error: clocks differ by more
   than 2 minutes, or the command was already seen. Fix NTP.
 - Capability results `rejected` / `capability_unavailable`: the capability is
   not enabled on this host (`service.*` need explicit opt-in and an
   allowlist).
+
+## Controller signing-key rotation
+
+The controller signs everything it sends; agents pin its public key. To
+change the key without stopping any agent:
+
+1. **Controller:** create the next key and announce it
+   (`MACHINARCHY_AGENT_GATEWAY_NEXT_PUBLIC_KEY`, see machinarchy
+   `docs/operations.md`). `GET /api/v1/agents/controller-key` then returns
+   both keys. The controller still signs with the current one.
+2. **Every agent:** pin both keys and restart:
+   `MACHINARCHY_AGENT_CONTROLLER_PUBLIC_KEY=<current>,<next>`. A restart
+   keeps the identity and lease (they are in the state file).
+3. **Controller:** sign with the next key (make it current). Agents pinning
+   both keys do not notice.
+4. **Every agent, later:** pin only the new key.
+5. **Controller:** retire the old key.
+
+An agent that skipped step 2 logs `discarding unauthenticated or malformed
+command` after step 3; pin both keys on it and restart.
 
 ## After a crash
 

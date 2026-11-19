@@ -80,7 +80,7 @@ func (e *env) config(mutate func(*config.Config)) config.Config {
 		Environment: config.Development,
 		NATS: config.NATS{URLs: []string{e.url}, ClientName: "test-agent", ConnectTimeout: 2 * time.Second,
 			ReconnectWait: 100 * time.Millisecond, DrainTimeout: 2 * time.Second},
-		StateFile: e.stateFile, ControllerPublicKey: e.controller.Key.Public().(ed25519.PublicKey),
+		StateFile: e.stateFile, ControllerPublicKeys: []ed25519.PublicKey{e.controller.Key.Public().(ed25519.PublicKey)},
 		EnrollmentToken: enrollmentToken, RequestTimeout: time.Second, ShutdownTimeout: time.Second,
 		Workers: 2, QueueSize: 8, MaxOperationTimeout: time.Minute, MaxOutputBytes: 64 << 10,
 	}
@@ -293,7 +293,7 @@ func TestEnrollmentRejectedStopsAgent(t *testing.T) {
 func TestResponsesFromUntrustedControllerAreIgnored(t *testing.T) {
 	e := newEnv(t)
 	r := e.start(e.config(func(c *config.Config) {
-		c.ControllerPublicKey = controllerKey(7).Public().(ed25519.PublicKey) // not the responder's key
+		c.ControllerPublicKeys = []ed25519.PublicKey{controllerKey(7).Public().(ed25519.PublicKey)} // not the responder's key
 	}))
 	time.Sleep(2 * time.Second)
 	if err := r.stop(t); err != nil {
@@ -427,4 +427,15 @@ func TestMetricsTextfile(t *testing.T) {
 	if text := read(); !strings.Contains(text, "machinarchy_agent_nats_connected 0\n") {
 		t.Fatalf("after stop the file still shows a connection:\n%s", text)
 	}
+}
+
+// Phase 16: an agent pinning two keys works with a controller that signs with
+// either, so the controller can switch keys without stopping agents.
+func TestAgentAcceptsEitherPinnedControllerKey(t *testing.T) {
+	e := newEnv(t)
+	e.start(e.config(func(c *config.Config) {
+		// The controller signs with the second pinned key ("next").
+		c.ControllerPublicKeys = []ed25519.PublicKey{controllerKey(7).Public().(ed25519.PublicKey), e.controller.Key.Public().(ed25519.PublicKey)}
+	}))
+	e.waitServing(t)
 }

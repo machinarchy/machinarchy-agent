@@ -34,7 +34,12 @@ oversized messages are rejected.
 | Message | Signed by | Verified with |
 |---|---|---|
 | `register.request` | new agent key | the key inside the body (proof of possession), via `OpenRegisterRequest` |
-| `register.response`, `lease.renew.response`, `command` | controller key | the controller public key pinned in agent config |
+| `register.response`, `lease.renew.response`, `command` | controller key (`Seal`, or `SealWith` for a key in a KMS) | the controller public key(s) pinned in agent config, via `OpenAny`: one key, or two during a rotation |
+
+Signing-key rotation needs no wire change: the envelope carries no key ID,
+and an agent pinning two keys accepts a message that either verifies.
+`SealWith` takes any Ed25519 `crypto.Signer` and checks the returned signature
+before sending, so a faulty KMS cannot emit messages agents reject.
 | `lease.renew.request`, `result` | agent key | the key recorded at registration, via `OpenFromAgent` |
 
 ## Flows

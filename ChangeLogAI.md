@@ -1,5 +1,18 @@
 # AI Change Log
 
+## 2026-11-19 — Audit Phase 16: two pinned controller keys and KMS-ready sealing (branch audit/keys)
+
+- `protocol/agentv1/envelope.go`: `SealWith(crypto.Signer, …)` signs with any Ed25519 signer (a KMS) and verifies the returned signature before building the envelope; `Seal` delegates to it. `OpenAny([]ed25519.PublicKey, …)` accepts a message any pinned key verifies; `Open` delegates to it. Standard library only; no wire change (golden fixtures unchanged).
+- `internal/config`: `ControllerPublicKeys` (was `ControllerPublicKey`), one or two keys from the variable (comma) or file (lines); a third key, duplicates and bad keys are refused. `internal/app` verifies with `OpenAny`.
+- Docs: `docs/configuration.md`, `docs/protocol.md` (rotation needs no wire change), `docs/runbook.md` "Controller signing-key rotation" (5 steps), env example, CHANGELOG.
+
+### Verification
+
+- `TestSealWithSignerAndOpenAny`: `SealWith` output equals `Seal` (Ed25519 is deterministic); a signer returning another key's signature is refused; current and next keys open, an unpinned key does not, `Open` with one key refuses the other; no keys is an error. Golden tests pass without `-update`.
+- `TestControllerKeysForRotation`: two keys by variable and by file; three keys, a duplicate, a bad key refused.
+- `TestAgentAcceptsEitherPinnedControllerKey`: an agent pinning `[other, controller]` serves commands; `TestResponsesFromUntrustedControllerAreIgnored` still passes.
+- `make check` passes (fmt, tidy, vet ×3, race tests, lint 0 issues, build, deployment-check). Two earlier runs failed `TestAgentEndToEnd` at its 20s budget, at the `service.status` step, while the machine's load average was about 1000. After a reboot (load about 7) every run passed. The step runs no code this change touches.
+
 ## 2026-11-19 — Audit Phase 15: real-systemd findings fixed, unit verification target (branch audit/agent-ops)
 
 - **F15-01, Docker overlay broken** (`compose.systemd.yaml`): `systemctl` refuses the system bus unless `/run/systemd/system` exists (`EHOSTDOWN`, "System has not been booted with systemd"). The overlay mounted only the D-Bus socket, so every `service.*` call failed in Docker on any host. Added an empty root-owned tmpfs (`size 4096`, mode 0755) at that path; the host's `/run/systemd` is not exposed. `docs/deployment/docker.md` explains it.

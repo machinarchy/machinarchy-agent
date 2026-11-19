@@ -7,6 +7,10 @@ notes and file-level details belong in `ChangeLogAI.md`.
 
 ### Changed
 
+- `MACHINARCHY_AGENT_CONTROLLER_PUBLIC_KEY[_FILE]` accepts two keys (current
+  and next, comma- or line-separated), so the controller's signing key can be
+  rotated without stopping agents. The wire protocol is unchanged.
+
 - Enrollment tokens are single-use and issued per host by a machinarchy
   owner; the shared token is for development only.
 - With NATS in operator (JWT) mode, the agent connects with its own NATS user

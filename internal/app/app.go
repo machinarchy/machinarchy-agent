@@ -496,7 +496,7 @@ func (a *Agent) roundTrip(ctx context.Context, nc *nats.Conn, subject string, re
 	if err != nil {
 		return fmt.Errorf("%s request: %w", requestKind, err)
 	}
-	if err := agentv1.Open(a.cfg.ControllerPublicKey, responseKind, msg.Data, agentv1.MaxControlMessageBytes, response); err != nil {
+	if err := agentv1.OpenAny(a.cfg.ControllerPublicKeys, responseKind, msg.Data, agentv1.MaxControlMessageBytes, response); err != nil {
 		// A response that is not signed by the pinned controller key is
 		// treated as no response at all; keep waiting for the real one.
 		return fmt.Errorf("%s: %w", responseKind, err)
@@ -562,7 +562,7 @@ func (a *Agent) handle(ctx context.Context, agentID string, disp *dispatch.Dispa
 		return
 	}
 	var cmd agentv1.Command
-	if err := agentv1.Open(a.cfg.ControllerPublicKey, agentv1.KindCommand, msg.Data(), agentv1.MaxCommandMessageBytes, &cmd); err != nil {
+	if err := agentv1.OpenAny(a.cfg.ControllerPublicKeys, agentv1.KindCommand, msg.Data(), agentv1.MaxCommandMessageBytes, &cmd); err != nil {
 		a.logger.Warn("discarding unauthenticated or malformed command", "error", err)
 		a.settle(msg.Term(), "term")
 		return

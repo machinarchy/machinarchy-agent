@@ -107,20 +107,22 @@ func (n NATS) UsesTLS() bool {
 
 // Config is the validated agent configuration.
 type Config struct {
-	Environment         string
-	LogLevel            slog.Level
-	NATS                NATS
-	StateFile           string
-	ControllerPublicKey ed25519.PublicKey
-	EnrollmentToken     string
-	RequestTimeout      time.Duration
-	ShutdownTimeout     time.Duration
-	Workers             int
-	QueueSize           int
-	MaxOperationTimeout time.Duration
-	MaxOutputBytes      int
-	ServiceEnabled      bool
-	Services            capabilities.ServiceOptions
+	Environment string
+	LogLevel    slog.Level
+	NATS        NATS
+	StateFile   string
+	// ControllerPublicKeys are the pinned controller keys: one normally, two
+	// (current and next) during a signing-key rotation.
+	ControllerPublicKeys []ed25519.PublicKey
+	EnrollmentToken      string
+	RequestTimeout       time.Duration
+	ShutdownTimeout      time.Duration
+	Workers              int
+	QueueSize            int
+	MaxOperationTimeout  time.Duration
+	MaxOutputBytes       int
+	ServiceEnabled       bool
+	Services             capabilities.ServiceOptions
 	// MetricsFile is the Prometheus textfile to rewrite (ADR-0004); "" turns
 	// metrics off.
 	MetricsFile     string
@@ -230,7 +232,7 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("%s must be at least 1s", EnvMetricsInterval)
 	}
 
-	if cfg.ControllerPublicKey, err = loadControllerKey(getenv); err != nil {
+	if cfg.ControllerPublicKeys, err = loadControllerKeys(getenv); err != nil {
 		return Config{}, err
 	}
 	if cfg.EnrollmentToken, err = valueOrFile(getenv, EnvEnrollmentToken, EnvEnrollmentTokenFile, true); err != nil {
@@ -309,8 +311,13 @@ func (c Config) Validate() error {
 			return errors.New("production requires NATS authentication (credentials file, token, username/password, or client certificate)")
 		}
 	}
-	if len(c.ControllerPublicKey) != ed25519.PublicKeySize {
-		return fmt.Errorf("%s or %s is required", EnvControllerPublicKey, EnvControllerPublicKeyFile)
+	if len(c.ControllerPublicKeys) == 0 || len(c.ControllerPublicKeys) > MaxControllerKeys {
+		return fmt.Errorf("%s or %s is required: one key, or two during a rotation", EnvControllerPublicKey, EnvControllerPublicKeyFile)
+	}
+	for _, key := range c.ControllerPublicKeys {
+		if len(key) != ed25519.PublicKeySize {
+			return errors.New("controller public keys must be Ed25519 keys")
+		}
 	}
 	if c.EnrollmentToken != "" && (len(c.EnrollmentToken) < agentv1.MinEnrollmentToken || len(c.EnrollmentToken) > agentv1.MaxEnrollmentToken || !validLine(c.EnrollmentToken, agentv1.MaxEnrollmentToken)) {
 		return fmt.Errorf("enrollment token must be %d-%d characters on one line", agentv1.MinEnrollmentToken, agentv1.MaxEnrollmentToken)
@@ -335,16 +342,35 @@ func (c Config) Validate() error {
 	return nil
 }
 
-func loadControllerKey(getenv func(string) string) (ed25519.PublicKey, error) {
+// MaxControllerKeys is how many controller keys an agent pins at once: the
+// current one, plus the next one during a rotation.
+const MaxControllerKeys = 2
+
+// loadControllerKeys parses one or two keys separated by commas or
+// whitespace (so a file may hold one key per line).
+func loadControllerKeys(getenv func(string) string) ([]ed25519.PublicKey, error) {
 	raw, err := valueOrFile(getenv, EnvControllerPublicKey, EnvControllerPublicKeyFile, false)
 	if err != nil || raw == "" {
 		return nil, err
 	}
-	key, err := agentv1.ParsePublicKey(raw)
-	if err != nil {
-		return nil, fmt.Errorf("controller public key: %w", err)
+	fields := strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == '\r' })
+	if len(fields) > MaxControllerKeys {
+		return nil, fmt.Errorf("controller public key: at most %d keys (current and next)", MaxControllerKeys)
 	}
-	return key, nil
+	keys := make([]ed25519.PublicKey, 0, len(fields))
+	for _, field := range fields {
+		key, err := agentv1.ParsePublicKey(field)
+		if err != nil {
+			return nil, fmt.Errorf("controller public key: %w", err)
+		}
+		for _, existing := range keys {
+			if existing.Equal(key) {
+				return nil, errors.New("controller public key: the same key is listed twice")
+			}
+		}
+		keys = append(keys, key)
+	}
+	return keys, nil
 }
 
 // valueOrFile reads a value from key or from the file named by fileKey.

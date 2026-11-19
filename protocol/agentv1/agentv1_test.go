@@ -2,10 +2,12 @@ package agentv1
 
 import (
 	"bytes"
+	"crypto"
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"flag"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -337,5 +339,55 @@ func TestAgentPermissionsAreScopedToOneAgent(t *testing.T) {
 			strings.HasPrefix(ControllerInboxPrefix+".x", strings.TrimSuffix(subject, ">")) {
 			t.Fatalf("bootstrap subscription %q covers agent or controller inboxes", subject)
 		}
+	}
+}
+
+// badSigner returns a signature from a different key.
+type badSigner struct{ public, other ed25519.PrivateKey }
+
+func (s badSigner) Public() crypto.PublicKey { return s.public.Public() }
+func (s badSigner) Sign(_ io.Reader, message []byte, _ crypto.SignerOpts) ([]byte, error) {
+	return ed25519.Sign(s.other, message), nil
+}
+
+// Key rotation (Phase 16): SealWith accepts any Ed25519 crypto.Signer and
+// produces the same bytes as Seal; OpenAny accepts a message signed by any
+// pinned key and nothing else.
+func TestSealWithSignerAndOpenAny(t *testing.T) {
+	current := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{1}, ed25519.SeedSize))
+	next := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{2}, ed25519.SeedSize))
+	stranger := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{3}, ed25519.SeedSize))
+	body := &RenewResponse{ProtocolVersion: ProtocolVersion, RequestID: "req-1", AgentID: "agent-1",
+		Lease: &Lease{LeaseID: "lease-1", ExpiresAt: time.Unix(1700000000, 0).UTC(), HeartbeatIntervalMillis: 5000}}
+
+	viaKey, err := Seal(current, KindRenewResponse, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	viaSigner, err := SealWith(crypto.Signer(current), KindRenewResponse, body)
+	if err != nil || !bytes.Equal(viaKey, viaSigner) {
+		t.Fatalf("SealWith differs from Seal (Ed25519 is deterministic): %v", err)
+	}
+	if _, err := SealWith(badSigner{public: current, other: stranger}, KindRenewResponse, body); err == nil {
+		t.Fatal("a signer returning a signature from another key was accepted")
+	}
+
+	pins := []ed25519.PublicKey{current.Public().(ed25519.PublicKey), next.Public().(ed25519.PublicKey)}
+	fromNext, _ := Seal(next, KindRenewResponse, body)
+	fromStranger, _ := Seal(stranger, KindRenewResponse, body)
+	var out RenewResponse
+	for name, raw := range map[string][]byte{"current": viaKey, "next": fromNext} {
+		if err := OpenAny(pins, KindRenewResponse, raw, MaxControlMessageBytes, &out); err != nil {
+			t.Errorf("%s key: %v", name, err)
+		}
+	}
+	if err := OpenAny(pins, KindRenewResponse, fromStranger, MaxControlMessageBytes, &out); !errors.Is(err, ErrInvalidSignature) {
+		t.Errorf("unpinned key = %v", err)
+	}
+	if err := Open(pins[0], KindRenewResponse, fromNext, MaxControlMessageBytes, &out); !errors.Is(err, ErrInvalidSignature) {
+		t.Errorf("Open with only the current key accepted the next key: %v", err)
+	}
+	if err := OpenAny(nil, KindRenewResponse, viaKey, MaxControlMessageBytes, &out); err == nil {
+		t.Error("no keys accepted")
 	}
 }

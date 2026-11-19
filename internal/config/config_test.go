@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"os"
 	"path/filepath"
@@ -192,5 +193,30 @@ func TestStateFilePath(t *testing.T) {
 	}
 	if got, _ := StateFilePath(env(map[string]string{EnvStateFile: "/srv/agent/state.json"})); got != "/srv/agent/state.json" {
 		t.Fatalf("explicit = %q", got)
+	}
+}
+
+// Phase 16: during a signing-key rotation the agent pins the controller's
+// current and next key.
+func TestControllerKeysForRotation(t *testing.T) {
+	next := agentv1.EncodePublicKey(ed25519.NewKeyFromSeed(bytes.Repeat([]byte{9}, ed25519.SeedSize)).Public().(ed25519.PublicKey))
+	third := agentv1.EncodePublicKey(ed25519.NewKeyFromSeed(bytes.Repeat([]byte{8}, ed25519.SeedSize)).Public().(ed25519.PublicKey))
+	cfg, err := Load(devEnv(map[string]string{EnvControllerPublicKey: controllerKey + ", " + next}))
+	if err != nil || len(cfg.ControllerPublicKeys) != 2 {
+		t.Fatalf("two keys: %d, %v", len(cfg.ControllerPublicKeys), err)
+	}
+	file := writeFile(t, controllerKey+"\n"+next+"\n", 0o644) // a public key file need not be private
+	cfg, err = Load(devEnv(map[string]string{EnvControllerPublicKey: "", EnvControllerPublicKeyFile: file}))
+	if err != nil || len(cfg.ControllerPublicKeys) != 2 {
+		t.Fatalf("key file with two lines: %d, %v", len(cfg.ControllerPublicKeys), err)
+	}
+	for name, value := range map[string]string{
+		"three keys": controllerKey + "," + next + "," + third,
+		"duplicate":  controllerKey + "," + controllerKey,
+		"one bad":    controllerKey + ",not-a-key",
+	} {
+		if _, err := Load(devEnv(map[string]string{EnvControllerPublicKey: value})); err == nil {
+			t.Errorf("%s accepted", name)
+		}
 	}
 }
