@@ -180,7 +180,29 @@ exact service allowlist and a narrowly scoped host privilege policy before
 enabling it. Never grant broad service-control permissions simply to make the
 Agent work.
 
-## 7. Supported platforms
+## 7. Metrics
+
+The agent writes a Prometheus textfile for node_exporter's textfile collector
+(no listener; see `docs/configuration.md#metrics`). The unit's
+`ProtectSystem=strict` makes the filesystem read-only, so allow the directory
+with a drop-in:
+
+```bash
+sudo install -d -m 0755 -o machagent -g machagent /var/lib/node_exporter/textfile_collector
+sudo systemctl edit machinarchy-agent
+```
+
+```ini
+[Service]
+ReadWritePaths=/var/lib/node_exporter/textfile_collector
+Environment=MACHINARCHY_AGENT_METRICS_FILE=/var/lib/node_exporter/textfile_collector/machinarchy_agent.prom
+```
+
+Run node_exporter with
+`--collector.textfile.directory=/var/lib/node_exporter/textfile_collector`.
+The file is 0644 and holds only counts, timestamps and the version.
+
+## 8. Supported platforms
 
 | OS | Architecture | Deployment | Status |
 |---|---|---|---|

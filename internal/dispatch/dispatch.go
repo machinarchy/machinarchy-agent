@@ -152,6 +152,13 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 // Consumers must not pull commands before then.
 func (d *Dispatcher) Ready() <-chan struct{} { return d.ready }
 
+// Stats returns how many operations wait for a worker and how many run now.
+func (d *Dispatcher) Stats() (queued, running int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.queue), len(d.running)
+}
+
 func (d *Dispatcher) setAccepting(value bool) {
 	d.mu.Lock()
 	d.accepting = value

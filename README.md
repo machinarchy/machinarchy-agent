@@ -106,8 +106,10 @@ Full reference: [docs/configuration.md](docs/configuration.md).
 - systemd: [docs/deployment/systemd.md](docs/deployment/systemd.md)
 - Docker: [docs/deployment/docker.md](docs/deployment/docker.md)
 - Health: `machinarchy-agent --healthcheck` exits 0 while the agent is
-  enrolled and holds an unexpired lease (the image's `HEALTHCHECK`). The agent
-  serves no HTTP.
+  enrolled and holds an unexpired lease (the image's `HEALTHCHECK`). It needs
+  only the state file. The agent serves no HTTP.
+- Metrics: optional Prometheus textfile for node_exporter
+  (`MACHINARCHY_AGENT_METRICS_FILE`, [ADR-0004](docs/architecture/decisions/ADR-0004-metrics-textfile.md)).
 - Logs: JSON on stdout; failures carry the cause under `error`.
 - Shutdown: SIGTERM gives running operations `MACHINARCHY_AGENT_SHUTDOWN_TIMEOUT`
   (default 20s), then drains NATS within `MACHINARCHY_AGENT_DRAIN_TIMEOUT`;

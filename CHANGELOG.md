@@ -20,6 +20,11 @@ notes and file-level details belong in `ChangeLogAI.md`.
 
 ### Added
 
+- Metrics as a Prometheus textfile for node_exporter
+  (`MACHINARCHY_AGENT_METRICS_FILE`, `MACHINARCHY_AGENT_METRICS_INTERVAL`):
+  connection, enrolment, lease, operations, dispatcher load, warnings and
+  errors. No listener (ADR-0004).
+- `--healthcheck` now needs only the state file, not the full configuration.
 - `--healthcheck`: exits 0 when the agent is enrolled and its lease is live;
   the container image uses it as its health check.
 

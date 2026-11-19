@@ -14,6 +14,7 @@ import (
 
 	"github.com/machinarchy/machinarchy-agent/internal/app"
 	"github.com/machinarchy/machinarchy-agent/internal/config"
+	"github.com/machinarchy/machinarchy-agent/internal/metrics"
 	"github.com/machinarchy/machinarchy-agent/internal/state"
 	"github.com/machinarchy/machinarchy-agent/protocol/agentv1"
 )
@@ -43,27 +44,34 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) in
 		_, _ = fmt.Fprintf(stdout, "machinarchy-agent %s (commit %s, built %s, protocol v%d)\n", Version, Commit, BuildTime, agentv1.ProtocolVersion)
 		return 0
 	}
-	cfg, err := config.Load(getenv)
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "invalid configuration: %v\n", err)
-		return 2
-	}
 	if *healthcheck {
-		if err := state.Health(cfg.StateFile, time.Now()); err != nil {
+		// Only the state file is needed (Q-24): the health check must work
+		// where the full configuration and its secrets are not available.
+		path, err := config.StateFilePath(getenv)
+		if err == nil {
+			err = state.Health(path, time.Now())
+		}
+		if err != nil {
 			_, _ = fmt.Fprintln(stderr, err)
 			return 1
 		}
 		return 0
 	}
+	cfg, err := config.Load(getenv)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "invalid configuration: %v\n", err)
+		return 2
+	}
 	if *checkConfig {
 		_, _ = fmt.Fprintln(stdout, "configuration is valid")
 		return 0
 	}
-	logger := slog.New(slog.NewJSONHandler(stdout, &slog.HandlerOptions{Level: cfg.LogLevel})).
+	recorder := &metrics.Recorder{}
+	logger := slog.New(metrics.Handler(slog.NewJSONHandler(stdout, &slog.HandlerOptions{Level: cfg.LogLevel}), recorder)).
 		With("service", "machinarchy-agent", "version", Version)
 	slog.SetDefault(logger)
 
-	agent, err := app.New(cfg, Version, logger)
+	agent, err := app.New(cfg, Version, logger, recorder)
 	if err != nil {
 		logger.Error("agent failed to start", "error", err)
 		return 1

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/machinarchy/machinarchy-agent/internal/capabilities"
+	"github.com/machinarchy/machinarchy-agent/internal/metrics"
 	"github.com/machinarchy/machinarchy-agent/protocol/agentv1"
 )
 
@@ -49,6 +50,8 @@ const (
 	EnvServiceControl          = "MACHINARCHY_AGENT_SERVICE_CONTROL_ENABLED"
 	EnvServiceAllowlist        = "MACHINARCHY_AGENT_SERVICE_ALLOWLIST"
 	EnvSystemctlPath           = "MACHINARCHY_AGENT_SYSTEMCTL_PATH"
+	EnvMetricsFile             = "MACHINARCHY_AGENT_METRICS_FILE"
+	EnvMetricsInterval         = "MACHINARCHY_AGENT_METRICS_INTERVAL"
 )
 
 // removedSettings were accepted by earlier, non-functional builds. Failing on
@@ -118,6 +121,10 @@ type Config struct {
 	MaxOutputBytes      int
 	ServiceEnabled      bool
 	Services            capabilities.ServiceOptions
+	// MetricsFile is the Prometheus textfile to rewrite (ADR-0004); "" turns
+	// metrics off.
+	MetricsFile     string
+	MetricsInterval time.Duration
 }
 
 // Load reads configuration through getenv (os.Getenv in production).
@@ -165,12 +172,8 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 	}
 
-	defaultState := "/var/lib/machinarchy-agent/state.json"
-	if cfg.Environment == Development {
-		defaultState = filepath.Join("data", "agent", "state.json")
-	}
-	if cfg.StateFile, err = filepath.Abs(get(EnvStateFile, defaultState)); err != nil {
-		return Config{}, fmt.Errorf("%s: %w", EnvStateFile, err)
+	if cfg.StateFile, err = StateFilePath(getenv); err != nil {
+		return Config{}, err
 	}
 
 	durations := []struct {
@@ -185,6 +188,7 @@ func Load(getenv func(string) string) (Config, error) {
 		{EnvRequestTimeout, &cfg.RequestTimeout, 5 * time.Second, time.Minute},
 		{EnvShutdownTimeout, &cfg.ShutdownTimeout, 20 * time.Second, 5 * time.Minute},
 		{EnvOperationTimeout, &cfg.MaxOperationTimeout, 5 * time.Minute, agentv1.MaxOperationTimeout},
+		{EnvMetricsInterval, &cfg.MetricsInterval, 15 * time.Second, 10 * time.Minute},
 	}
 	for _, d := range durations {
 		if *d.target, err = parseDuration(d.key, get(d.key, ""), d.fallback, d.max); err != nil {
@@ -217,6 +221,15 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 	}
 
+	if cfg.MetricsFile = get(EnvMetricsFile, ""); cfg.MetricsFile != "" {
+		if err := metrics.ValidPath(cfg.MetricsFile); err != nil {
+			return Config{}, fmt.Errorf("%s: %w", EnvMetricsFile, err)
+		}
+	}
+	if cfg.MetricsInterval < time.Second {
+		return Config{}, fmt.Errorf("%s must be at least 1s", EnvMetricsInterval)
+	}
+
 	if cfg.ControllerPublicKey, err = loadControllerKey(getenv); err != nil {
 		return Config{}, err
 	}
@@ -224,6 +237,24 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, cfg.Validate()
+}
+
+// StateFilePath resolves the state file from MACHINARCHY_AGENT_STATE_FILE,
+// or the environment's default. It needs nothing else, so the health check
+// works without the agent's full configuration.
+func StateFilePath(getenv func(string) string) (string, error) {
+	path := strings.TrimSpace(getenv(EnvStateFile))
+	if path == "" {
+		path = "/var/lib/machinarchy-agent/state.json"
+		if strings.EqualFold(strings.TrimSpace(getenv(EnvEnvironment)), Development) {
+			path = filepath.Join("data", "agent", "state.json")
+		}
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", EnvStateFile, err)
+	}
+	return abs, nil
 }
 
 // Validate checks cross-field rules.

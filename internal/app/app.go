@@ -28,6 +28,7 @@ import (
 	"github.com/machinarchy/machinarchy-agent/internal/capabilities"
 	"github.com/machinarchy/machinarchy-agent/internal/config"
 	"github.com/machinarchy/machinarchy-agent/internal/dispatch"
+	"github.com/machinarchy/machinarchy-agent/internal/metrics"
 	"github.com/machinarchy/machinarchy-agent/internal/state"
 	"github.com/machinarchy/machinarchy-agent/protocol/agentv1"
 )
@@ -57,12 +58,21 @@ type Agent struct {
 	key      ed25519.PrivateKey
 
 	leaseExpiry atomic.Int64 // unix nanoseconds
+
+	// For the metrics textfile (ADR-0004).
+	recorder *metrics.Recorder
+	conn     atomic.Pointer[nats.Conn]
+	disp     atomic.Pointer[dispatch.Dispatcher]
 }
 
-// New opens local state and builds the capability registry.
-func New(cfg config.Config, version string, logger *slog.Logger) (*Agent, error) {
+// New opens local state and builds the capability registry. recorder
+// receives connection and lease events; nil keeps a private one.
+func New(cfg config.Config, version string, logger *slog.Logger, recorder *metrics.Recorder) (*Agent, error) {
 	if logger == nil {
 		logger = slog.Default()
+	}
+	if recorder == nil {
+		recorder = &metrics.Recorder{}
 	}
 	store, err := state.Open(cfg.StateFile)
 	if err != nil {
@@ -72,7 +82,7 @@ func New(cfg config.Config, version string, logger *slog.Logger) (*Agent, error)
 	if err != nil {
 		return nil, fmt.Errorf("initialize capabilities: %w", err)
 	}
-	return &Agent{cfg: cfg, version: version, logger: logger, store: store, registry: registry, key: store.PrivateKey()}, nil
+	return &Agent{cfg: cfg, version: version, logger: logger, store: store, registry: registry, key: store.PrivateKey(), recorder: recorder}, nil
 }
 
 // PublicKey is the agent's identity key (sent at registration).
@@ -81,11 +91,21 @@ func (a *Agent) PublicKey() ed25519.PublicKey { return a.key.Public().(ed25519.P
 // Run connects, registers if needed and serves commands until ctx is
 // cancelled. It returns nil on a clean shutdown.
 func (a *Agent) Run(ctx context.Context) error {
+	if a.cfg.MetricsFile != "" {
+		metricsCtx, stopMetrics := context.WithCancel(context.WithoutCancel(ctx))
+		writer := &metrics.Writer{Path: a.cfg.MetricsFile, Interval: a.cfg.MetricsInterval, Recorder: a.recorder,
+			Collect: a.gauges, Logger: a.logger.With("component", "metrics")}
+		done := make(chan struct{})
+		go func() { defer close(done); writer.Run(metricsCtx) }()
+		// Runs last: the final write shows the agent disconnected.
+		defer func() { stopMetrics(); <-done }()
+	}
 	conn, err := a.connectWithStoredCredential()
 	if err != nil {
 		return err
 	}
-	defer func() { a.disconnect(conn.nc) }()
+	a.conn.Store(conn.nc)
+	defer func() { a.conn.Store(nil); a.disconnect(conn.nc) }()
 
 	identity, err := a.ensureRegistered(ctx, conn.nc)
 	if err != nil {
@@ -102,6 +122,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		a.conn.Store(next.nc)
 		a.disconnect(conn.nc)
 		conn = next
 		a.logger.Info("connected to NATS with the agent's own credential", "agent_id", identity.AgentID)
@@ -120,6 +141,8 @@ func (a *Agent) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	a.disp.Store(disp)
+	defer a.disp.Store(nil)
 
 	runCtx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
@@ -274,11 +297,15 @@ func (a *Agent) connect(auth ...nats.Option) (*nats.Conn, error) {
 		nats.RetryOnFailedConnect(true),
 		nats.DrainTimeout(c.DrainTimeout),
 		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
+			a.recorder.NATSDisconnected()
 			if err != nil {
 				a.logger.Warn("disconnected from NATS; reconnecting", "error", err)
 			}
 		}),
-		nats.ReconnectHandler(func(*nats.Conn) { a.logger.Info("reconnected to NATS") }),
+		nats.ReconnectHandler(func(*nats.Conn) {
+			a.recorder.NATSReconnected()
+			a.logger.Info("reconnected to NATS")
+		}),
 		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
 			if errors.Is(err, nats.ErrAuthExpired) {
 				// Expected once per NATS user JWT lifetime: the server closes
@@ -369,6 +396,7 @@ func (a *Agent) register(ctx context.Context, nc *nats.Conn, requestID string) (
 	}); err != nil {
 		return state.Identity{}, permanent(fmt.Errorf("persist identity: %w", err))
 	}
+	a.recorder.LeaseRenewed(time.Now())
 	return identity, nil
 }
 
@@ -410,7 +438,26 @@ func (a *Agent) renew(ctx context.Context, nc *nats.Conn, identity state.Identit
 		return state.Identity{}, permanent(fmt.Errorf("persist lease: %w", err))
 	}
 	a.leaseExpiry.Store(identity.LeaseExpiresAt.UnixNano())
+	a.recorder.LeaseRenewed(time.Now())
 	return identity, nil
+}
+
+// gauges reads the agent's current state for the metrics textfile.
+func (a *Agent) gauges() metrics.Gauges {
+	counts := a.store.Counts()
+	g := metrics.Gauges{Version: a.version, Enrolled: counts.Enrolled, LeaseExpiresAt: counts.LeaseExpiresAt,
+		Operations: make(map[metrics.OperationKey]int, len(counts.Operations)), ResultsAwaitingAck: counts.ResultsAwaitingAck,
+		QueueSize: a.cfg.QueueSize}
+	for key, n := range counts.Operations {
+		g.Operations[metrics.OperationKey{Phase: key[0], Status: key[1]}] = n
+	}
+	if nc := a.conn.Load(); nc != nil {
+		g.NATSConnected = nc.IsConnected()
+	}
+	if disp := a.disp.Load(); disp != nil {
+		g.QueueDepth, g.Running = disp.Stats()
+	}
+	return g
 }
 
 // keepLease renews on the controller-requested cadence. Commands are paused

@@ -31,7 +31,10 @@ until the host is re-enrolled. Every other failure exits 1 and is restarted.
 
 ## Running but unhealthy
 
-`machinarchy-agent --healthcheck` prints why:
+`machinarchy-agent --healthcheck` prints why. It reads only the state file
+(`MACHINARCHY_AGENT_STATE_FILE`, or the default), so it works without the
+agent's configuration or secrets. With metrics on, the textfile shows the same
+signals over time (`docs/configuration.md#metrics`).
 
 - `not enrolled`: registration has not succeeded yet. Look for
   `retrying` lines with the cause (NATS down, controller not answering).

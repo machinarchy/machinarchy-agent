@@ -1,5 +1,23 @@
 # AI Change Log
 
+## 2026-11-19 — Audit Phase 15: metrics textfile (ADR-0004) and a health check that needs only the state file (branch audit/agent-ops)
+
+- **ADR-0004** (`docs/architecture/decisions/ADR-0004-metrics-textfile.md`): metrics as a Prometheus textfile for node_exporter, chosen by the owner over a Unix socket or a localhost listener. No listener is added.
+- **New `internal/metrics`**: `Recorder` (reconnects, disconnects, last lease renewal, warning/error counts and times), a `slog` handler wrapper that counts every warning and error, `Render` (Prometheus text, deterministic order, escaped labels), `WriteFile` (temp file + rename, mode 0644 despite the unit's `UMask=0077`), and `Writer` (writes at once, on each interval, and once more at stop; a failing path is logged once until it recovers).
+- **Agent wiring** (`internal/app/app.go`): `New` takes the recorder; `Run` starts the writer when `MACHINARCHY_AGENT_METRICS_FILE` is set and stops it last, so the final file shows the agent disconnected. Connection state is read from the current `*nats.Conn` at write time; lease renewals and registrations are recorded.
+- `internal/state`: `Store.Counts()` counts operations by phase and result status and unacknowledged results without cloning the document. `internal/dispatch`: `Dispatcher.Stats()` (queue depth, running).
+- `internal/config`: `MACHINARCHY_AGENT_METRICS_FILE` (absolute `*.prom`), `MACHINARCHY_AGENT_METRICS_INTERVAL` (default 15s, 1s–10m), and `StateFilePath`, shared by `Load` and the health check.
+- **Q-24:** `--healthcheck` resolves the state file from `MACHINARCHY_AGENT_STATE_FILE` (or the default) and runs before `config.Load`, so it no longer needs the NATS URL, controller key or secrets.
+- Docs: `docs/configuration.md` (settings, metric list, suggested alerts), `docs/deployment/systemd.md` §7 (drop-in `ReadWritePaths=` and node_exporter flag; platforms renumbered §8), `docs/runbook.md`, README, `deployments/systemd/agent.env.example`, `CHANGELOG.md`.
+
+### Verification
+
+- `internal/metrics`: rendering (every metric, TYPE before samples, deterministic, label escaping), the handler counts warnings even when the output level is error, atomic write with mode 0644 under umask 077 and no temp files left, final write at stop, a failing path logged once, path validation.
+- `TestMetricsTextfile` (agent against embedded NATS and the fake controller): enrolled 1, connected 1, one `done/succeeded` operation, queue capacity, lease timestamps set; after stop the file shows `nats_connected 0`.
+- `TestHealthcheckNeedsOnlyTheStateFile`: only `MACHINARCHY_AGENT_STATE_FILE` set; no file → 1 without a configuration error, not enrolled → 1, enrolled with a live lease → 0.
+- `TestMetricsSettings`, `TestStateFilePath`.
+- `make check`: fmt-check, tidy-check, vet (host, linux/amd64, linux/arm64), test-race, lint (0 issues), build, deployment-check — all pass. `verify-systemd-unit.sh` skipped (no `systemd-analyze` on macOS); covered in the next change.
+
 ## 2026-11-18 — Audit Phase 12: docs for per-host tokens and operator mode (branch audit/agent-authz)
 
 - `README.md` (how it works, quick start, configure) and `docs/configuration.md`: enrolment tokens are single-use and issued per host by a machinarchy owner (`POST /api/v1/agents/enrollment-tokens`). The quick start shows the bootstrap credential for operator mode, and points to machinarchy's `deployments/nats/generate`.

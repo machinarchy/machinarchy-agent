@@ -161,3 +161,36 @@ func TestServiceSettings(t *testing.T) {
 		t.Fatalf("service settings = %+v", cfg.Services)
 	}
 }
+
+// ADR-0004: metrics are off unless a textfile path is set.
+func TestMetricsSettings(t *testing.T) {
+	cfg, err := Load(devEnv(nil))
+	if err != nil || cfg.MetricsFile != "" || cfg.MetricsInterval != 15*time.Second {
+		t.Fatalf("defaults: %q %s %v", cfg.MetricsFile, cfg.MetricsInterval, err)
+	}
+	cfg, err = Load(devEnv(map[string]string{EnvMetricsFile: "/var/lib/node_exporter/textfile_collector/machinarchy_agent.prom", EnvMetricsInterval: "30s"}))
+	if err != nil || cfg.MetricsFile == "" || cfg.MetricsInterval != 30*time.Second {
+		t.Fatalf("set: %q %s %v", cfg.MetricsFile, cfg.MetricsInterval, err)
+	}
+	for _, bad := range []map[string]string{
+		{EnvMetricsFile: "relative.prom"}, {EnvMetricsFile: "/var/lib/agent.txt"},
+		{EnvMetricsInterval: "500ms"}, {EnvMetricsInterval: "1h"},
+	} {
+		if _, err := Load(devEnv(bad)); err == nil {
+			t.Errorf("%v accepted", bad)
+		}
+	}
+}
+
+// Q-24: the state file path resolves without the rest of the configuration.
+func TestStateFilePath(t *testing.T) {
+	if got, err := StateFilePath(env(nil)); err != nil || got != "/var/lib/machinarchy-agent/state.json" {
+		t.Fatalf("production default = %q, %v", got, err)
+	}
+	if got, _ := StateFilePath(env(map[string]string{EnvEnvironment: "Development"})); !strings.HasSuffix(got, filepath.Join("data", "agent", "state.json")) || !filepath.IsAbs(got) {
+		t.Fatalf("development default = %q", got)
+	}
+	if got, _ := StateFilePath(env(map[string]string{EnvStateFile: "/srv/agent/state.json"})); got != "/srv/agent/state.json" {
+		t.Fatalf("explicit = %q", got)
+	}
+}

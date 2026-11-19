@@ -153,6 +153,37 @@ func (s *Store) Snapshot() Document {
 	return clone(&s.doc)
 }
 
+// Counts summarizes the state for metrics without copying it.
+type Counts struct {
+	Enrolled       bool
+	LeaseExpiresAt time.Time
+	// Operations by phase and result status ("" until done).
+	Operations         map[[2]string]int
+	ResultsAwaitingAck int
+}
+
+// Counts returns the current summary.
+func (s *Store) Counts() Counts {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := Counts{Operations: map[[2]string]int{}}
+	if s.doc.Identity != nil {
+		c.Enrolled = true
+		c.LeaseExpiresAt = s.doc.Identity.LeaseExpiresAt
+	}
+	for _, op := range s.doc.Operations {
+		status := ""
+		if op.Result != nil {
+			status = string(op.Result.Status)
+		}
+		c.Operations[[2]string{string(op.Phase), status}]++
+		if op.Phase == PhaseDone && !op.ResultAcked {
+			c.ResultsAwaitingAck++
+		}
+	}
+	return c
+}
+
 // Update applies change to a copy of the document and persists it. The
 // in-memory state only changes if the write succeeds. Returning an error from
 // change aborts without writing.

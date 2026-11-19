@@ -108,7 +108,7 @@ type running struct {
 
 func (e *env) start(cfg config.Config) *running {
 	e.t.Helper()
-	agent, err := New(cfg, "test", testLogger())
+	agent, err := New(cfg, "test", testLogger(), nil)
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -299,7 +299,7 @@ func TestResponsesFromUntrustedControllerAreIgnored(t *testing.T) {
 	if err := r.stop(t); err != nil {
 		t.Fatalf("Run() = %v", err)
 	}
-	agent, err := New(e.config(nil), "test", nil)
+	agent, err := New(e.config(nil), "test", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +322,7 @@ func TestRevokedLeaseClearsIdentity(t *testing.T) {
 	case <-time.After(15 * time.Second): // heartbeat is 5s
 		t.Fatal("agent did not stop after lease revocation")
 	}
-	agent, err := New(e.config(nil), "test", nil)
+	agent, err := New(e.config(nil), "test", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +350,7 @@ func TestShutdownIsBoundedWhileWaitingForController(t *testing.T) {
 // renewed, so a paused agent loses no work.
 func TestCommandsNakedWhileLeaseExpiredAreRedelivered(t *testing.T) {
 	e := newEnv(t)
-	agent, err := New(e.config(nil), "test", testLogger())
+	agent, err := New(e.config(nil), "test", testLogger(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,5 +382,49 @@ func TestCommandsNakedWhileLeaseExpiredAreRedelivered(t *testing.T) {
 	}
 	if _, err := e.controller.Await(waitCtx, paused, agentv1.StatusSucceeded); err != nil {
 		t.Fatalf("command nak'ed during lease expiry was not redelivered: %v", err)
+	}
+}
+
+// ADR-0004: the agent rewrites the metrics textfile while it runs and once
+// more when it stops, so the file shows the final state.
+func TestMetricsTextfile(t *testing.T) {
+	e := newEnv(t)
+	path := filepath.Join(t.TempDir(), "machinarchy_agent.prom")
+	r := e.start(e.config(func(c *config.Config) {
+		c.MetricsFile, c.MetricsInterval = path, 50*time.Millisecond
+	}))
+	e.waitServing(t)
+	read := func() string {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	text := read()
+	for !strings.Contains(text, `machinarchy_agent_operations{phase="done",status="succeeded"} 1`) && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+		text = read()
+	}
+	for _, want := range []string{
+		"machinarchy_agent_enrolled 1\n", "machinarchy_agent_nats_connected 1\n",
+		`machinarchy_agent_operations{phase="done",status="succeeded"} 1` + "\n",
+		"machinarchy_agent_dispatch_queue_capacity 8\n",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("metrics missing %q:\n%s", want, text)
+		}
+	}
+	for _, zero := range []string{"machinarchy_agent_lease_renewed_timestamp_seconds 0\n", "machinarchy_agent_lease_expiry_timestamp_seconds 0\n"} {
+		if strings.Contains(text, zero) {
+			t.Fatalf("lease not reported (%q):\n%s", zero, text)
+		}
+	}
+	if err := r.stop(t); err != nil {
+		t.Fatal(err)
+	}
+	if text := read(); !strings.Contains(text, "machinarchy_agent_nats_connected 0\n") {
+		t.Fatalf("after stop the file still shows a connection:\n%s", text)
 	}
 }

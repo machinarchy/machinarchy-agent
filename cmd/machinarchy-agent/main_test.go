@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/machinarchy/machinarchy-agent/internal/app"
+	"github.com/machinarchy/machinarchy-agent/internal/state"
 	"github.com/machinarchy/machinarchy-agent/protocol/agentv1"
 )
 
@@ -69,5 +71,40 @@ func TestExitCodeStopsSupervisorRestartsOnlyWhenOperatorMustAct(t *testing.T) {
 		if got := exitCode(tc.err); got != tc.want {
 			t.Errorf("exitCode(%v) = %d, want %d", tc.err, got, tc.want)
 		}
+	}
+}
+
+// Q-24: the health check needs only the state file, not the configuration
+// (no NATS URL, controller key or secrets).
+func TestHealthcheckNeedsOnlyTheStateFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "state.json")
+	env := func(k string) string {
+		if k == "MACHINARCHY_AGENT_STATE_FILE" {
+			return path
+		}
+		return ""
+	}
+	var out, errOut bytes.Buffer
+	if code := run([]string{"--healthcheck"}, &out, &errOut, env); code != 1 || strings.Contains(errOut.String(), "invalid configuration") {
+		t.Fatalf("no state file = %d %q, want 1 without a configuration error", code, errOut.String())
+	}
+	store, err := state.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	errOut.Reset()
+	if code := run([]string{"--healthcheck"}, &out, &errOut, env); code != 1 || !strings.Contains(errOut.String(), "not enrolled") {
+		t.Fatalf("not enrolled = %d %q", code, errOut.String())
+	}
+	if err := store.Update(func(doc *state.Document) error {
+		doc.Identity = &state.Identity{AgentID: "agent-1", HostID: "host-1", LeaseID: "lease-1",
+			LeaseExpiresAt: time.Now().Add(time.Minute), HeartbeatIntervalMillis: 1000}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	errOut.Reset()
+	if code := run([]string{"--healthcheck"}, &out, &errOut, env); code != 0 {
+		t.Fatalf("enrolled with a lease = %d %q", code, errOut.String())
 	}
 }
