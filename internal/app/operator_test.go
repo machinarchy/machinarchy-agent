@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -239,5 +240,29 @@ func TestOperatorModePermissions(t *testing.T) {
 		},
 	} {
 		t.Run("bootstrap: "+what, func(t *testing.T) { expectViolation(t, what, bootstrap, bootstrapErrs, act) })
+	}
+}
+
+// ADR-0004: leaving the bootstrap connection for the agent's own credential
+// is a planned close, not a lost connection. Found on the real systemd host,
+// where the metrics reported one disconnect right after enrolment.
+func TestMetricsDoNotCountThePlannedBootstrapClose(t *testing.T) {
+	e := newOperatorEnv(t, time.Hour)
+	path := filepath.Join(t.TempDir(), "machinarchy_agent.prom")
+	cfg := e.agentConfig()
+	cfg.MetricsFile, cfg.MetricsInterval = path, 50*time.Millisecond
+	r := e.start(cfg)
+	e.waitServing(t)
+	time.Sleep(150 * time.Millisecond) // at least one write after the switch
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "machinarchy_agent_nats_connected 1\n") || !strings.Contains(text, "machinarchy_agent_nats_disconnects_total 0\n") {
+		t.Fatalf("after switching credentials:\n%s", text)
+	}
+	if err := r.stop(t); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -297,8 +297,10 @@ func (a *Agent) connect(auth ...nats.Option) (*nats.Conn, error) {
 		nats.RetryOnFailedConnect(true),
 		nats.DrainTimeout(c.DrainTimeout),
 		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
-			a.recorder.NATSDisconnected()
+			// A nil error is a close the agent asked for (e.g. leaving the
+			// bootstrap connection): not a lost connection.
 			if err != nil {
+				a.recorder.NATSDisconnected()
 				a.logger.Warn("disconnected from NATS; reconnecting", "error", err)
 			}
 		}),
