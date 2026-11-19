@@ -82,6 +82,7 @@ Requires Go 1.27 (pinned toolchain `go1.27.4`).
 
 ```bash
 make check          # fmt, tidy, vet (host, linux/amd64, linux/arm64), race tests, lint, build, deployment checks
+make systemd-verify # systemd-analyze verify on the unit; uses a container when the host has no systemd
 make test-race      # both modules; integration tests run against an embedded nats-server
 make coverage       # race + coverage.out
 make fuzz           # protocol decoder fuzz targets for FUZZTIME (default 30s)

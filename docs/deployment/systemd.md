@@ -180,6 +180,26 @@ exact service allowlist and a narrowly scoped host privilege policy before
 enabling it. Never grant broad service-control permissions simply to make the
 Agent work.
 
+`service.status` needs no extra privilege. For `service.control`, a Polkit
+rule like this one (the units must match `MACHINARCHY_AGENT_SERVICE_ALLOWLIST`)
+allows only start, stop and restart of the listed units. It was verified on
+Ubuntu 24.04 with systemd 255; without it the call fails with
+`execution_failed`:
+
+```js
+// /etc/polkit-1/rules.d/50-machinarchy-agent.rules
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        subject.user == "machagent" &&
+        ["nginx.service"].indexOf(action.lookup("unit")) >= 0 &&
+        ["start", "stop", "restart"].indexOf(action.lookup("verb")) >= 0) {
+        return polkit.Result.YES;
+    }
+});
+```
+
+Then set `MACHINARCHY_AGENT_SERVICE_CONTROL_ENABLED=true` and restart the agent.
+
 ## 7. Metrics
 
 The agent writes a Prometheus textfile for node_exporter's textfile collector

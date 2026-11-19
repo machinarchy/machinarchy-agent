@@ -11,7 +11,7 @@ BUILD_TIME ?= $(shell git log -1 --format=%cI 2>/dev/null || echo unknown)
 MODULES := . protocol
 LDFLAGS := -s -w -X main.Version=$(VERSION) -X main.Commit=$(COMMIT) -X main.BuildTime=$(BUILD_TIME)
 
-.PHONY: help fmt fmt-check tidy-check test test-race coverage vet lint vuln gosec fuzz build run check deployment-check clean docker-build
+.PHONY: help fmt fmt-check tidy-check test test-race coverage vet lint vuln gosec fuzz build run check deployment-check systemd-verify clean docker-build
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*##"}; /^[a-zA-Z0-9_-]+:.*##/ {printf "%-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -63,6 +63,21 @@ run: ## Run the agent with the environment inherited from the shell
 	$(GO) run ./cmd/machinarchy-agent
 
 check: fmt-check tidy-check vet test-race lint build deployment-check ## Run all local quality checks
+
+# Ubuntu 24.04 (systemd 255), pinned by digest like the Dockerfile's bases.
+SYSTEMD_VERIFY_IMAGE ?= ubuntu@sha256:73b999393d07f2bf65a40373778a44dc9a6d54ad7718d29247d8ff9413c4d6a8
+
+systemd-verify: ## Run systemd-analyze verify on the unit (in a container when this host has no systemd); any diagnostic fails
+	@if command -v systemd-analyze >/dev/null 2>&1; then \
+		./scripts/verify-systemd-unit.sh 2>&1 | tee .systemd-verify.log; \
+	else \
+		docker run --rm -v "$(CURDIR):/src:ro" -w /src $(SYSTEMD_VERIFY_IMAGE) bash -c \
+			'apt-get update -qq >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends systemd >/dev/null 2>&1 && systemd --version | head -1 && ./scripts/verify-systemd-unit.sh' 2>&1 | tee .systemd-verify.log; \
+	fi; \
+	if grep -q '\.service:[0-9]' .systemd-verify.log || ! grep -q 'verification passed' .systemd-verify.log; then \
+		rm -f .systemd-verify.log; echo "systemd-analyze reported problems in the unit." >&2; exit 1; \
+	fi; \
+	rm -f .systemd-verify.log
 
 deployment-check: ## Validate deployment scripts and release packaging
 	@for script in scripts/*.sh scripts/lib/*.sh; do bash -n "$$script"; done

@@ -1,5 +1,19 @@
 # AI Change Log
 
+## 2026-11-19 — Audit Phase 15: real-systemd findings fixed, unit verification target (branch audit/agent-ops)
+
+- **F15-01, Docker overlay broken** (`compose.systemd.yaml`): `systemctl` refuses the system bus unless `/run/systemd/system` exists (`EHOSTDOWN`, "System has not been booted with systemd"). The overlay mounted only the D-Bus socket, so every `service.*` call failed in Docker on any host. Added an empty root-owned tmpfs (`size 4096`, mode 0755) at that path; the host's `/run/systemd` is not exposed. `docs/deployment/docker.md` explains it.
+- **F15-02, metrics** (`internal/app/app.go`): a nil-error disconnect (the agent closing its bootstrap connection after enrolment) was counted in `machinarchy_agent_nats_disconnects_total`. Only disconnects with an error count now.
+- **F15-03, unit verification** (`Makefile`): new `make systemd-verify`. It runs `scripts/verify-systemd-unit.sh` on the host, or in an Ubuntu 24.04 container pinned by digest when the host has no `systemd-analyze` (this Mac). `systemd-analyze verify` only warns on bad directives and exits 0, so the target fails on any `*.service:<line>` diagnostic. The script itself is unchanged.
+- `docs/deployment/systemd.md` §6: a Polkit rule for `service.control`, as tested. README lists the new target. CHANGELOG.
+
+### Verification
+
+- Real-systemd lab (privileged Ubuntu 24.04 container, systemd 255, D-Bus, polkitd; machinarchy controller and NATS in operator mode): see machinarchy `AUDIT/15-agent-ops.md` §3 for the full log.
+- Docker overlay: the image (`make docker-build`) against a second systemd container whose D-Bus socket is shared through a volume, prepared with the repository's `scripts/prepare-docker-host.sh demo.service`. Before the fix `service.status` and `service.control` returned `execution_failed`; after, status succeeded and restart changed the unit's PID (193 → 208). A non-allowlisted unit was rejected. `docker compose config` of `compose.yaml` + `compose.systemd.yaml` shows the merged tmpfs mount.
+- `TestMetricsDoNotCountThePlannedBootstrapClose` fails without the fix (`disconnects_total 1`) and passes with it.
+- `make systemd-verify` passes on the shipped unit and fails on a copy with `Restart=sometimes-maybe` (the script alone printed "passed" for it).
+
 ## 2026-11-19 — Audit Phase 15: metrics textfile (ADR-0004) and a health check that needs only the state file (branch audit/agent-ops)
 
 - **ADR-0004** (`docs/architecture/decisions/ADR-0004-metrics-textfile.md`): metrics as a Prometheus textfile for node_exporter, chosen by the owner over a Unix socket or a localhost listener. No listener is added.

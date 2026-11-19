@@ -18,8 +18,17 @@ notes and file-level details belong in `ChangeLogAI.md`.
   revokes it. The systemd unit no longer restarts it in that case
   (`RestartPreventExitStatus=78`); other failures still exit 1.
 
+### Fixed
+
+- Docker systemd overlay (`compose.systemd.yaml`): `service.status` and
+  `service.control` failed with "System has not been booted with systemd",
+  because `systemctl` in the container did not see `/run/systemd/system`. The
+  overlay now mounts an empty marker directory there.
+
 ### Added
 
+- `make systemd-verify`: `systemd-analyze verify` on the unit, in a container
+  on hosts without systemd; any diagnostic fails it.
 - Metrics as a Prometheus textfile for node_exporter
   (`MACHINARCHY_AGENT_METRICS_FILE`, `MACHINARCHY_AGENT_METRICS_INTERVAL`):
   connection, enrolment, lease, operations, dispatcher load, warnings and
