@@ -81,7 +81,11 @@ copied into an image layer.
 The systemd integration is a separate opt-in overlay. It mounts the host
 system bus socket into the Agent container and adds the socket's owning group
 as a supplemental group. The host's systemd manager continues to run on the
-host; systemd is not PID 1 inside the container.
+host; systemd is not PID 1 inside the container. It also mounts an empty
+tmpfs, owned by root and not writable by the agent, at `/run/systemd/system`: `systemctl` talks to the bus
+only when that directory exists (its "booted with systemd" check), and without
+it every `service.*` call fails with `System has not been booted with systemd`.
+The host's own `/run/systemd` is not mounted.
 
 Systemd grants unprivileged read access to its D-Bus API generally, while
 operations that change unit state require the Polkit action
