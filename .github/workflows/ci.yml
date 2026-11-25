@@ -3,14 +3,18 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    # main is the stable channel; beta and alpha publish pre-releases
+    # (.github/WORKFLOWS.md, "Release channels").
+    branches: [main, beta, alpha]
 
 permissions:
   contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Only pull requests are cancelled: a push to a release branch may be in the
+  # middle of publishing a release.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   GOLANGCI_LINT_VERSION: v2.15.0
@@ -99,3 +103,18 @@ jobs:
 
       - name: Fuzz the protocol decoders (short)
         run: make fuzz FUZZTIME=20s
+
+  orchestrate-release:
+    name: Evaluate and create semantic release
+    if: ${{ github.event_name == 'push' && contains(fromJSON('["refs/heads/main","refs/heads/beta","refs/heads/alpha"]'), github.ref) }}
+    needs: [verify, security]
+    uses: ./.github/workflows/release.yml
+    permissions:
+      contents: read
+      # For the release archives' provenance attestation (release.yml).
+      id-token: write
+      attestations: write
+    secrets:
+      # A PAT or GitHub App token, not GITHUB_TOKEN, so Release Please's
+      # PR/tag events can trigger the container image workflow.
+      MY_GITHUB_TOKEN: ${{ secrets.MY_GITHUB_TOKEN }}

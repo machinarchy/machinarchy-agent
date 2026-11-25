@@ -1,5 +1,14 @@
 # AI Change Log
 
+## 2026-11-25 — Release channels: alpha and beta pre-releases via Release Please (branch release/initial)
+
+- **Same model as machinarchy.** The agent no longer releases by pushing a `v*` tag by hand. Pushes to `main` (stable), `beta` and `alpha` run CI and then `release.yml`, now a reusable workflow: Release Please computes the version from Conventional Commits (suffix `-beta.N` / `-alpha.N` on the pre-release branches; the first version of every channel is `0.0.1`), opens a release PR, and on merge creates the tag and the GitHub Release. The job then builds the `linux/amd64` and `linux/arm64` binaries at that exact commit, packages them with `scripts/package-release.sh`, uploads them with `checksums.txt`, and attests the archives (`id-token` and `attestations` write, granted by the calling job).
+- **Safeguards:** the job refuses a tag whose suffix does not match its branch; `docker.yml` (unchanged) still starts on the new tag and only a stable tag moves `latest`; the CI concurrency group no longer cancels a push run, only pull request runs, so a release is not cut off.
+- **Per-channel files:** `.github/release-please/config.{stable,beta,alpha}.json` and `manifest.*.json` (empty). `CHANGELOG.md` stays hand-written (`skip-changelog`); GitHub release notes come from the commits.
+- **Removed from the release job:** the format, vet, race-test and deployment checks it used to repeat; `ci.yml` runs them before the release job and gates it.
+- **Docs:** `.github/WORKFLOWS.md` (new) describes the workflows, the secret `MY_GITHUB_TOKEN`, the channels and the setup.
+- **Checks run:** the workflow YAML and JSON parse; a cross-reference script (job needs, outputs, reusable inputs, secrets, permissions, make targets, scripts) found nothing; the tag-against-branch guard and the tag regexes were tested for stable, beta and alpha; `package-release.sh`'s version check accepts `v0.0.1-beta.1`. **Not run:** the workflows and Release Please (they need GitHub); the first run may need fixes.
+
 ## 2026-11-25 — CI before the first push: pinned action, aligned scanners (branch release/initial)
 
 - `.github/workflows/ci.yml`: `actions/upload-artifact` is pinned by commit SHA (v4.6.2) like every other action; govulncheck is v1.9.0 (the version the audit verified with; v1.1.4 predates Go 1.27); the separate gosec step is removed because golangci-lint already runs the gosec rules (`.golangci.yml`) and the old standalone gosec could not load Go 1.27 packages. `make gosec` stays for local use.
