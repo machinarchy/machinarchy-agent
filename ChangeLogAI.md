@@ -1,5 +1,10 @@
 # AI Change Log
 
+## 2026-11-25 — CI before the first push: pinned action, aligned scanners (branch release/initial)
+
+- `.github/workflows/ci.yml`: `actions/upload-artifact` is pinned by commit SHA (v4.6.2) like every other action; govulncheck is v1.9.0 (the version the audit verified with; v1.1.4 predates Go 1.27); the separate gosec step is removed because golangci-lint already runs the gosec rules (`.golangci.yml`) and the old standalone gosec could not load Go 1.27 packages. `make gosec` stays for local use.
+- **Checks run:** the workflow YAML parses; every `uses:` is pinned by SHA. The workflows were not run (they have never run on GitHub).
+
 ## 2026-11-19 — Audit Phase 16: two pinned controller keys and KMS-ready sealing (branch audit/keys)
 
 - `protocol/agentv1/envelope.go`: `SealWith(crypto.Signer, …)` signs with any Ed25519 signer (a KMS) and verifies the returned signature before building the envelope; `Seal` delegates to it. `OpenAny([]ed25519.PublicKey, …)` accepts a message any pinned key verifies; `Open` delegates to it. Standard library only; no wire change (golden fixtures unchanged).
