@@ -1,0 +1,50 @@
+name: machinarchy-agent
+
+# Production profile. Secrets are bind-mounted files under ./secrets (0600,
+# owned by UID 10001): nats.creds and, until enrollment completes,
+# enrollment.token. MACHINARCHY_AGENT_NATS_URL and
+# MACHINARCHY_AGENT_CONTROLLER_PUBLIC_KEY come from .env.
+services:
+  agent:
+    image: ${MACHINARCHY_AGENT_IMAGE:-ghcr.io/machinarchy/machinarchy-agent:latest}
+    user: "10001:10001"
+    env_file:
+      - .env
+    environment:
+      MACHINARCHY_ENVIRONMENT: production
+      MACHINARCHY_AGENT_STATE_FILE: /var/lib/machinarchy-agent/state.json
+      MACHINARCHY_AGENT_SERVICE_MANAGEMENT_ENABLED: "false"
+      MACHINARCHY_AGENT_SERVICE_CONTROL_ENABLED: "false"
+      MACHINARCHY_AGENT_NATS_CREDENTIALS_FILE: /run/secrets/nats.creds
+      MACHINARCHY_AGENT_ENROLLMENT_TOKEN_FILE: ${MACHINARCHY_AGENT_ENROLLMENT_TOKEN_FILE:-}
+    volumes:
+      - agent-state:/var/lib/machinarchy-agent
+      - type: bind
+        source: ./secrets
+        target: /run/secrets
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /etc/os-release
+        target: /run/machinarchy-host/os-release
+        read_only: true
+        bind:
+          create_host_path: false
+    uts: host
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    # Compose cannot skip restarts by exit code. After a rejection or
+    # revocation (exit 78) Docker keeps restarting with a growing delay;
+    # stop the service until an operator re-enrols the host.
+    restart: unless-stopped
+
+volumes:
+  agent-state:
+    name: machinarchy-agent-state

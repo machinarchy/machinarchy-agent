@@ -1,0 +1,56 @@
+[Unit]
+Description=Machinarchy Agent
+Documentation=https://github.com/machinarchy/machinarchy-agent
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=5min
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=machagent
+Group=machagent
+ExecStart=/usr/local/bin/machinarchy-agent
+Restart=on-failure
+RestartSec=5s
+# Exit 78: the controller rejected the token or revoked this agent. A restart
+# cannot fix that; an operator must issue a new token or key.
+RestartPreventExitStatus=78
+# Must exceed MACHINARCHY_AGENT_SHUTDOWN_TIMEOUT + MACHINARCHY_AGENT_DRAIN_TIMEOUT.
+TimeoutStopSec=35s
+KillSignal=SIGTERM
+
+EnvironmentFile=-/etc/machinarchy-agent/agent.env
+Environment=MACHINARCHY_ENVIRONMENT=production
+Environment=MACHINARCHY_AGENT_STATE_FILE=/var/lib/machinarchy-agent/state.json
+Environment=HOME=/var/lib/machinarchy-agent
+WorkingDirectory=/var/lib/machinarchy-agent
+
+StateDirectory=machinarchy-agent
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+ReadWritePaths=/var/lib/machinarchy-agent
+
+[Install]
+WantedBy=multi-user.target

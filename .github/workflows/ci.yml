@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    # main is the stable channel; beta and alpha publish pre-releases
+    # (.github/WORKFLOWS.md, "Release channels").
+    branches: [main, beta, alpha]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # Only pull requests are cancelled: a push to a release branch may be in the
+  # middle of publishing a release.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GOLANGCI_LINT_VERSION: v2.15.0
+  # golangci-lint includes the gosec rules, so there is no separate gosec run.
+  GOVULNCHECK_VERSION: v1.9.0
+
+jobs:
+  verify:
+    name: Build, vet, lint, race tests, coverage
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            protocol/go.mod
+
+      - name: Modules are tidy and verified (agent and protocol)
+        run: make tidy-check
+
+      - name: Formatting
+        run: make fmt-check
+
+      - name: Vet (host, linux/amd64, linux/arm64; both modules)
+        run: make vet
+
+      - name: Build
+        run: make build
+
+      - name: Race tests (both modules)
+        run: make test-race
+
+      - name: Coverage
+        run: make coverage
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: agent-coverage
+          path: coverage.out
+          retention-days: 14
+
+      - name: Install golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+          install-only: true
+
+      - name: Lint (both modules)
+        run: make lint
+
+      - name: Deployment packaging checks
+        run: make deployment-check
+
+  security:
+    name: govulncheck, fuzz smoke
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            protocol/go.mod
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}
+
+      - name: govulncheck (both modules)
+        run: make vuln
+
+      - name: Fuzz the protocol decoders (short)
+        run: make fuzz FUZZTIME=20s
+
+  orchestrate-release:
+    name: Evaluate and create semantic release
+    if: ${{ github.event_name == 'push' && contains(fromJSON('["refs/heads/main","refs/heads/beta","refs/heads/alpha"]'), github.ref) }}
+    needs: [verify, security]
+    uses: ./.github/workflows/release.yml
+    permissions:
+      contents: read
+      # For the release archives' provenance attestation (release.yml).
+      id-token: write
+      attestations: write
+    secrets:
+      # A PAT or GitHub App token, not GITHUB_TOKEN, so Release Please's
+      # PR/tag events can trigger the container image workflow.
+      MY_GITHUB_TOKEN: ${{ secrets.MY_GITHUB_TOKEN }}
