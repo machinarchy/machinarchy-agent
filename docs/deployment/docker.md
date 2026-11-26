@@ -33,13 +33,12 @@ Prepare a protected `.env` file and the secrets directory:
 
 ```bash
 cat > .env <<'ENV'
-MACHINARCHY_AGENT_NATS_URL=tls://nats.example.internal:4222
+MACHINARCHY_AGENT_SERVER_URL=https://machinarchy.example.internal
 MACHINARCHY_AGENT_CONTROLLER_PUBLIC_KEY=<base64 controller key>
 MACHINARCHY_AGENT_ENROLLMENT_TOKEN_FILE=/run/secrets/enrollment.token
 ENV
 chmod 600 .env
 mkdir -p secrets
-install -o 10001 -g 10001 -m 0600 /path/to/nats.creds secrets/nats.creds
 install -o 10001 -g 10001 -m 0600 /path/to/enrollment.token secrets/enrollment.token
 ```
 
@@ -48,8 +47,9 @@ Secret files must be owned by UID 10001 with mode `0600`. After the logs show
 `agent registered`, delete `secrets/enrollment.token`, remove
 `MACHINARCHY_AGENT_ENROLLMENT_TOKEN_FILE` from `.env` and recreate the
 container. The identity is kept in the `machinarchy-agent-state` volume. Make
-sure the NATS endpoint is reachable from the container network. Do not use
-`127.0.0.1` for a NATS server running on the Docker host; inside the container,
+sure the controller is reachable from the container network. A private CA
+goes in `secrets/ca.pem` with `MACHINARCHY_AGENT_SERVER_CA_FILE=/run/secrets/ca.pem`.
+Do not use `127.0.0.1` for a controller running on the Docker host; inside the container,
 that address refers to the container itself.
 
 Start the published GHCR image:

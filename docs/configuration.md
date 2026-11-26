@@ -2,26 +2,20 @@
 
 All settings are environment variables. Run `machinarchy-agent --check-config`
 to validate a configuration without connecting. Settings from earlier builds
-that no longer exist are rejected rather than ignored.
+that no longer exist are rejected rather than ignored. This includes every
+`MACHINARCHY_AGENT_NATS_*` setting: agents no longer connect to a broker, so
+existing agents must be re-enrolled against the controller's server URL.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `MACHINARCHY_ENVIRONMENT` | `production` | `production` requires `tls://` URLs and NATS authentication; `development` relaxes both |
+| `MACHINARCHY_ENVIRONMENT` | `production` | `production` requires an `https://` server URL; `development` also allows `http://` |
 | `MACHINARCHY_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` (JSON logs on stdout) |
-| `MACHINARCHY_AGENT_NAME` | `machinarchy-agent` | NATS client name |
-| `MACHINARCHY_AGENT_NATS_URL` | — (required) | Comma-separated `nats://` / `tls://` endpoints |
-| `MACHINARCHY_AGENT_NATS_CREDENTIALS_FILE` | — | NATS `.creds` file, 0600, not a symlink. In operator (JWT) mode this is the shared **bootstrap** credential: it can only send enrolment and renewal requests. After enrolment the agent connects with its own NATS user JWT from the controller (see [protocol](protocol.md#nats-credentials)) and uses this file again only if that JWT has expired while the agent was down. |
-| `MACHINARCHY_AGENT_NATS_TOKEN` | — | Alternative auth |
-| `MACHINARCHY_AGENT_NATS_USERNAME` / `_PASSWORD` | — | Alternative auth (set both) |
-| `MACHINARCHY_AGENT_NATS_CA_FILE` | system roots | Private CA for `tls://` |
-| `MACHINARCHY_AGENT_NATS_CERT_FILE` / `_KEY_FILE` | — | Client certificate (mTLS); the key file must be 0600 |
+| `MACHINARCHY_AGENT_SERVER_URL` | — (required) | The controller's agent gateway, `https://host[:port]` (no path or credentials). `http://` is accepted only with `MACHINARCHY_ENVIRONMENT=development`. The certificate is always verified |
+| `MACHINARCHY_AGENT_SERVER_CA_FILE` | system roots | PEM file with extra trusted roots for a private controller CA |
 | `MACHINARCHY_AGENT_CONTROLLER_PUBLIC_KEY` or `_FILE` | — (required) | Base64 Ed25519 key that signs commands and responses. During a [signing-key rotation](runbook.md#controller-signing-key-rotation), two keys (current and next) separated by a comma, or one per line in the file |
 | `MACHINARCHY_AGENT_ENROLLMENT_TOKEN` or `_FILE` | — | Single-use token issued for this host by a machinarchy owner (`POST /api/v1/agents/enrollment-tokens`). Needed only until the first registration; the file must be 0600 |
 | `MACHINARCHY_AGENT_STATE_FILE` | `/var/lib/machinarchy-agent/state.json` (dev: `./data/agent/state.json`) | The directory is created 0700 and the file is 0600 |
-| `MACHINARCHY_AGENT_CONNECT_TIMEOUT` | `5s` | |
-| `MACHINARCHY_AGENT_RECONNECT_WAIT` | `2s` | Jittered |
-| `MACHINARCHY_AGENT_REQUEST_TIMEOUT` | `5s` | Register and renew requests, and acks |
-| `MACHINARCHY_AGENT_DRAIN_TIMEOUT` | `5s` | NATS drain on shutdown |
+| `MACHINARCHY_AGENT_REQUEST_TIMEOUT` | `5s` | Register, renew and result calls |
 | `MACHINARCHY_AGENT_SHUTDOWN_TIMEOUT` | `20s` | Time running operations get before being cancelled (reported `unknown`) |
 | `MACHINARCHY_AGENT_OPERATION_WORKERS` | `4` | 1–64, ≤ queue size |
 | `MACHINARCHY_AGENT_OPERATION_QUEUE_SIZE` | `32` | 1–256; excess requests are rejected with `queue_full` |
@@ -50,8 +44,8 @@ Point node_exporter's textfile collector at the directory.
 | `machinarchy_agent_info{version}` | Always 1 |
 | `machinarchy_agent_metrics_written_timestamp_seconds` | Last write; stale means the agent is not running |
 | `machinarchy_agent_enrolled` | 1 when the agent holds an identity |
-| `machinarchy_agent_nats_connected` | 1 while the broker connection is up |
-| `machinarchy_agent_nats_reconnects_total`, `_disconnects_total` | Since start |
+| `machinarchy_agent_controller_connected` | 1 while the connection to the controller is up |
+| `machinarchy_agent_controller_reconnects_total`, `_disconnects_total` | Since start |
 | `machinarchy_agent_lease_expiry_timestamp_seconds` | Commands pause after this |
 | `machinarchy_agent_lease_renewed_timestamp_seconds` | Last registration or renewal; lease age is `time() -` this |
 | `machinarchy_agent_operations{phase,status}` | Operations in the state file (queued, running, done by result status) |
@@ -60,7 +54,7 @@ Point node_exporter's textfile collector at the directory.
 | `machinarchy_agent_log_messages_total{level}` | Warnings and errors since start |
 | `machinarchy_agent_last_warning_timestamp_seconds`, `_last_error_timestamp_seconds` | 0 if none since start |
 
-Suggested alerts: written timestamp older than 3 intervals; `nats_connected`
+Suggested alerts: written timestamp older than 3 intervals; `controller_connected`
 0 for 5 minutes; lease expiry in the past; `results_awaiting_ack` growing;
 `queue_depth` near `queue_capacity`.
 

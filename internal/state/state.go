@@ -49,10 +49,6 @@ type Identity struct {
 	LeaseID                 string    `json:"lease_id"`
 	LeaseExpiresAt          time.Time `json:"lease_expires_at"`
 	HeartbeatIntervalMillis int64     `json:"heartbeat_interval_ms"`
-	// NATSUserJWT is the latest per-agent NATS credential from the controller
-	// (operator mode only). It is not a secret: it is useless without the
-	// identity key, which signs the server's nonce.
-	NATSUserJWT string `json:"nats_user_jwt,omitempty"`
 }
 
 // HeartbeatInterval returns the lease renewal cadence.

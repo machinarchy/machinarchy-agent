@@ -19,7 +19,7 @@ func testEnv(t *testing.T) func(string) string {
 	key := agentv1.EncodePublicKey(ed25519.NewKeyFromSeed(make([]byte, 32)).Public().(ed25519.PublicKey))
 	values := map[string]string{
 		"MACHINARCHY_ENVIRONMENT":                 "development",
-		"MACHINARCHY_AGENT_NATS_URL":              "nats://127.0.0.1:4222",
+		"MACHINARCHY_AGENT_SERVER_URL":            "http://127.0.0.1:8443",
 		"MACHINARCHY_AGENT_CONTROLLER_PUBLIC_KEY": key,
 		"MACHINARCHY_AGENT_STATE_FILE":            filepath.Join(t.TempDir(), "state", "state.json"),
 	}
@@ -75,7 +75,7 @@ func TestExitCodeStopsSupervisorRestartsOnlyWhenOperatorMustAct(t *testing.T) {
 }
 
 // Q-24: the health check needs only the state file, not the configuration
-// (no NATS URL, controller key or secrets).
+// (no server URL, controller key or secrets).
 func TestHealthcheckNeedsOnlyTheStateFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state", "state.json")
 	env := func(k string) string {

@@ -21,20 +21,20 @@ import (
 // Recorder holds the values that events update. It is safe for concurrent
 // use; the zero value is ready.
 type Recorder struct {
-	natsReconnects  atomic.Uint64
-	natsDisconnects atomic.Uint64
-	leaseRenewed    atomic.Int64 // unix nanoseconds
-	warnings        atomic.Uint64
-	errors          atomic.Uint64
-	lastWarning     atomic.Int64 // unix nanoseconds
-	lastError       atomic.Int64 // unix nanoseconds
+	controllerReconnects  atomic.Uint64
+	controllerDisconnects atomic.Uint64
+	leaseRenewed          atomic.Int64 // unix nanoseconds
+	warnings              atomic.Uint64
+	errors                atomic.Uint64
+	lastWarning           atomic.Int64 // unix nanoseconds
+	lastError             atomic.Int64 // unix nanoseconds
 }
 
-// NATSReconnected counts a reconnect.
-func (r *Recorder) NATSReconnected() { r.natsReconnects.Add(1) }
+// ControllerReconnected counts a reconnect.
+func (r *Recorder) ControllerReconnected() { r.controllerReconnects.Add(1) }
 
-// NATSDisconnected counts a lost connection.
-func (r *Recorder) NATSDisconnected() { r.natsDisconnects.Add(1) }
+// ControllerDisconnected counts a lost connection.
+func (r *Recorder) ControllerDisconnected() { r.controllerDisconnects.Add(1) }
 
 // LeaseRenewed records a successful registration or renewal.
 func (r *Recorder) LeaseRenewed(at time.Time) { r.leaseRenewed.Store(at.UnixNano()) }
@@ -89,8 +89,8 @@ type Gauges struct {
 	Version string
 	// Enrolled: the state file holds an identity.
 	Enrolled bool
-	// NATSConnected: the current broker connection is up.
-	NATSConnected bool
+	// ControllerConnected: the connection to the controller is up.
+	ControllerConnected bool
 	// LeaseExpiresAt is zero before registration.
 	LeaseExpiresAt time.Time
 	// Operations counts the operations in the state file by phase and
@@ -133,12 +133,12 @@ func Render(w io.Writer, r *Recorder, g Gauges, now time.Time) error {
 		plain("machinarchy_agent_metrics_written_timestamp_seconds", seconds(now.UnixNano())))
 	metric("machinarchy_agent_enrolled", "gauge", "1 when the agent holds an identity from the controller.",
 		plain("machinarchy_agent_enrolled", boolValue(g.Enrolled)))
-	metric("machinarchy_agent_nats_connected", "gauge", "1 while the broker connection is up.",
-		plain("machinarchy_agent_nats_connected", boolValue(g.NATSConnected)))
-	metric("machinarchy_agent_nats_reconnects_total", "counter", "Broker reconnects since the agent started.",
-		plain("machinarchy_agent_nats_reconnects_total", r.natsReconnects.Load()))
-	metric("machinarchy_agent_nats_disconnects_total", "counter", "Broker connections lost since the agent started.",
-		plain("machinarchy_agent_nats_disconnects_total", r.natsDisconnects.Load()))
+	metric("machinarchy_agent_controller_connected", "gauge", "1 while the connection to the controller is up.",
+		plain("machinarchy_agent_controller_connected", boolValue(g.ControllerConnected)))
+	metric("machinarchy_agent_controller_reconnects_total", "counter", "Controller reconnects since the agent started.",
+		plain("machinarchy_agent_controller_reconnects_total", r.controllerReconnects.Load()))
+	metric("machinarchy_agent_controller_disconnects_total", "counter", "Controller connections lost since the agent started.",
+		plain("machinarchy_agent_controller_disconnects_total", r.controllerDisconnects.Load()))
 
 	var expiry int64
 	if !g.LeaseExpiresAt.IsZero() {

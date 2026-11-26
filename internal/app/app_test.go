@@ -11,10 +11,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
-
-	"github.com/nats-io/nats-server/v2/server"
 
 	"github.com/machinarchy/machinarchy-agent/internal/capabilities"
 	"github.com/machinarchy/machinarchy-agent/internal/config"
@@ -24,38 +23,19 @@ import (
 
 const enrollmentToken = "enroll-0123456789abcdef0123456789abcdef"
 
-// startNATS runs a real, embedded NATS server with JetStream.
-func startNATS(t *testing.T) string {
-	t.Helper()
-	ns, err := server.NewServer(&server.Options{Host: "127.0.0.1", Port: -1, JetStream: true, StoreDir: t.TempDir(), NoLog: true, NoSigs: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	go ns.Start()
-	if !ns.ReadyForConnections(10 * time.Second) {
-		t.Fatal("NATS server did not start")
-	}
-	t.Cleanup(ns.Shutdown)
-	return ns.ClientURL()
-}
-
 func controllerKey(seed byte) ed25519.PrivateKey {
 	return ed25519.NewKeyFromSeed(bytes.Repeat([]byte{seed}, ed25519.SeedSize))
 }
 
 type env struct {
 	t          *testing.T
-	url        string
 	controller *fakecontroller.Controller
 	stateFile  string
 }
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	url := startNATS(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	controller, err := fakecontroller.Start(ctx, url, controllerKey(1), enrollmentToken)
+	controller, err := fakecontroller.Start(context.Background(), controllerKey(1), enrollmentToken)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,15 +52,14 @@ func newEnv(t *testing.T) *env {
 			}
 		}
 	})
-	return &env{t: t, url: url, controller: controller, stateFile: filepath.Join(t.TempDir(), "state", "state.json")}
+	return &env{t: t, controller: controller, stateFile: filepath.Join(t.TempDir(), "state", "state.json")}
 }
 
 func (e *env) config(mutate func(*config.Config)) config.Config {
 	cfg := config.Config{
 		Environment: config.Development,
-		NATS: config.NATS{URLs: []string{e.url}, ClientName: "test-agent", ConnectTimeout: 2 * time.Second,
-			ReconnectWait: 100 * time.Millisecond, DrainTimeout: 2 * time.Second},
-		StateFile: e.stateFile, ControllerPublicKeys: []ed25519.PublicKey{e.controller.Key.Public().(ed25519.PublicKey)},
+		Server:      config.Server{URL: e.controller.URL()},
+		StateFile:   e.stateFile, ControllerPublicKeys: []ed25519.PublicKey{e.controller.Key.Public().(ed25519.PublicKey)},
 		EnrollmentToken: enrollmentToken, RequestTimeout: time.Second, ShutdownTimeout: time.Second,
 		Workers: 2, QueueSize: 8, MaxOperationTimeout: time.Minute, MaxOutputBytes: 64 << 10,
 	}
@@ -345,10 +324,11 @@ func TestShutdownIsBoundedWhileWaitingForController(t *testing.T) {
 	}
 }
 
-// TestCommandsNakedWhileLeaseExpiredAreRedelivered forces the "lease expired"
-// nak path and checks JetStream redelivers the command once the lease is
-// renewed, so a paused agent loses no work.
-func TestCommandsNakedWhileLeaseExpiredAreRedelivered(t *testing.T) {
+// TestCommandsWhileLeaseExpiredAreRedelivered forces the "lease expired"
+// path: the agent leaves the command unacknowledged and reopens the stream,
+// and the controller delivers the command again once the lease is renewed, so
+// a paused agent loses no work.
+func TestCommandsWhileLeaseExpiredAreRedelivered(t *testing.T) {
 	e := newEnv(t)
 	agent, err := New(e.config(nil), "test", testLogger(), nil)
 	if err != nil {
@@ -365,8 +345,8 @@ func TestCommandsNakedWhileLeaseExpiredAreRedelivered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Wait until the consumer is pulling, then expire the lease locally. The
-	// next scheduled renewal (5s heartbeat) restores it.
+	// Wait until commands flow, then expire the lease locally. The next
+	// scheduled renewal (5s heartbeat) restores it.
 	waitCtx := timeout(t, 30*time.Second)
 	op, err := e.controller.Request(waitCtx, agentID, agentv1.CapabilityRuntimeInfo, map[string]any{}, time.Second)
 	if err != nil {
@@ -381,8 +361,149 @@ func TestCommandsNakedWhileLeaseExpiredAreRedelivered(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := e.controller.Await(waitCtx, paused, agentv1.StatusSucceeded); err != nil {
-		t.Fatalf("command nak'ed during lease expiry was not redelivered: %v", err)
+		t.Fatalf("command left unacknowledged during lease expiry was not redelivered: %v", err)
 	}
+}
+
+// The agent survives a controller outage: it reconnects by itself, receives
+// the commands queued meanwhile, and its identity is kept.
+func TestAgentSurvivesControllerRestart(t *testing.T) {
+	e := newEnv(t)
+	e.start(e.config(nil))
+	agentID := e.waitServing(t)
+
+	e.controller.Stop() // network loss / controller restart
+	ctx := timeout(t, 40*time.Second)
+	op, err := e.controller.Request(ctx, agentID, agentv1.CapabilityRuntimeInfo, map[string]any{}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1500 * time.Millisecond) // the agent notices and starts backing off
+	if err := e.controller.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.controller.Await(ctx, op, agentv1.StatusSucceeded); err != nil {
+		t.Fatalf("command queued during the outage was not delivered after reconnect: %v", err)
+	}
+	if n := len(e.controller.Agents()); n != 1 {
+		t.Fatalf("agent re-registered: %d identities", n)
+	}
+}
+
+// At-least-once delivery means repeats happen: the same operation queued a
+// second time (under a new command ID) runs once, the agent's ledger drops it.
+func TestRepeatedOperationRunsOnce(t *testing.T) {
+	e := newEnv(t)
+	e.controller.AckWait = 200 * time.Millisecond
+	e.start(e.config(nil))
+	agentID := e.waitServing(t)
+	ctx := timeout(t, 30*time.Second)
+	op, err := e.controller.Request(ctx, agentID, agentv1.CapabilityRuntimeInfo, map[string]any{}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.controller.Await(ctx, op, agentv1.StatusSucceeded); err != nil {
+		t.Fatal(err)
+	}
+	// Queue the identical command again under a new command ID: the same
+	// operation ID must not execute twice.
+	if err := e.controller.Send(ctx, agentID, agentv1.Command{Type: agentv1.CommandOperationRequest, OperationID: op,
+		Capability: agentv1.CapabilityRuntimeInfo, Input: json.RawMessage(`{}`), TimeoutMillis: 1000}); err != nil {
+		t.Fatal(err)
+	}
+	next, _ := e.controller.Request(ctx, agentID, agentv1.CapabilityRuntimeInfo, map[string]any{}, time.Second)
+	count := 0
+	for {
+		select {
+		case result := <-e.controller.Results():
+			if result.OperationID == op && result.Status == agentv1.StatusSucceeded {
+				count++
+			}
+			if result.OperationID == next && result.Status == agentv1.StatusSucceeded {
+				if count > 0 {
+					t.Fatalf("operation %s ran again (%d extra results)", op, count)
+				}
+				return
+			}
+		case <-ctx.Done():
+			t.Fatal("no result for the follow-up command")
+		}
+	}
+}
+
+// TLS is verified: with the controller's certificate trusted the agent
+// enrols over https; without it, it never does and holds no identity.
+func TestAgentVerifiesControllerCertificate(t *testing.T) {
+	serverTLS, caPEM, err := fakecontroller.NewTLS()
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller, err := fakecontroller.Start(context.Background(), controllerKey(1), enrollmentToken, fakecontroller.WithTLS(serverTLS))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(controller.Close)
+	e := &env{t: t, controller: controller, stateFile: filepath.Join(t.TempDir(), "state", "state.json")}
+	caFile := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(caFile, caPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Production rules apply: https is required and nothing is skipped.
+	untrusted := e.config(func(c *config.Config) { c.Environment = config.Production })
+	r := e.start(untrusted)
+	time.Sleep(1500 * time.Millisecond)
+	if len(controller.Agents()) != 0 {
+		t.Fatal("agent enrolled with an untrusted certificate")
+	}
+	if err := r.stop(t); err != nil {
+		t.Fatal(err)
+	}
+
+	e.start(e.config(func(c *config.Config) {
+		c.Environment = config.Production
+		c.Server.CAFile = caFile
+	}))
+	e.waitServing(t)
+}
+
+// The enrolment token and the lease are never logged, even at debug level.
+func TestSecretsAreNotLogged(t *testing.T) {
+	e := newEnv(t)
+	var buf lockedBuffer
+	agent, err := New(e.config(nil), "test", slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- agent.Run(ctx) }()
+	e.waitServing(t)
+	cancel()
+	<-done
+	if strings.Contains(buf.String(), enrollmentToken) {
+		t.Fatal("the enrolment token was logged")
+	}
+	if strings.Contains(buf.String(), agent.store.Snapshot().Identity.LeaseID) {
+		t.Fatal("the lease ID was logged")
+	}
+}
+
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // ADR-0004: the agent rewrites the metrics textfile while it runs and once
@@ -408,7 +529,7 @@ func TestMetricsTextfile(t *testing.T) {
 		text = read()
 	}
 	for _, want := range []string{
-		"machinarchy_agent_enrolled 1\n", "machinarchy_agent_nats_connected 1\n",
+		"machinarchy_agent_enrolled 1\n", "machinarchy_agent_controller_connected 1\n",
 		`machinarchy_agent_operations{phase="done",status="succeeded"} 1` + "\n",
 		"machinarchy_agent_dispatch_queue_capacity 8\n",
 	} {
@@ -424,7 +545,7 @@ func TestMetricsTextfile(t *testing.T) {
 	if err := r.stop(t); err != nil {
 		t.Fatal(err)
 	}
-	if text := read(); !strings.Contains(text, "machinarchy_agent_nats_connected 0\n") {
+	if text := read(); !strings.Contains(text, "machinarchy_agent_controller_connected 0\n") {
 		t.Fatalf("after stop the file still shows a connection:\n%s", text)
 	}
 }

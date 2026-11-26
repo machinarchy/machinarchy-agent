@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/machinarchy/machinarchy-agent/internal/capabilities"
 	"github.com/machinarchy/machinarchy-agent/internal/metrics"
+	"github.com/machinarchy/machinarchy-agent/internal/transport"
 	"github.com/machinarchy/machinarchy-agent/protocol/agentv1"
 )
 
@@ -23,19 +23,9 @@ import (
 const (
 	EnvEnvironment             = "MACHINARCHY_ENVIRONMENT"
 	EnvLogLevel                = "MACHINARCHY_LOG_LEVEL"
-	EnvAgentName               = "MACHINARCHY_AGENT_NAME"
-	EnvNATSURL                 = "MACHINARCHY_AGENT_NATS_URL"
-	EnvNATSCredentialsFile     = "MACHINARCHY_AGENT_NATS_CREDENTIALS_FILE" // #nosec G101 -- environment variable name, not a credential
-	EnvNATSToken               = "MACHINARCHY_AGENT_NATS_TOKEN"            // #nosec G101 -- environment variable name, not a credential
-	EnvNATSUsername            = "MACHINARCHY_AGENT_NATS_USERNAME"
-	EnvNATSPassword            = "MACHINARCHY_AGENT_NATS_PASSWORD" // #nosec G101 -- environment variable name, not a credential
-	EnvNATSCAFile              = "MACHINARCHY_AGENT_NATS_CA_FILE"
-	EnvNATSCertFile            = "MACHINARCHY_AGENT_NATS_CERT_FILE"
-	EnvNATSKeyFile             = "MACHINARCHY_AGENT_NATS_KEY_FILE"
-	EnvConnectTimeout          = "MACHINARCHY_AGENT_CONNECT_TIMEOUT"
-	EnvReconnectWait           = "MACHINARCHY_AGENT_RECONNECT_WAIT"
+	EnvServerURL               = "MACHINARCHY_AGENT_SERVER_URL"
+	EnvServerCAFile            = "MACHINARCHY_AGENT_SERVER_CA_FILE"
 	EnvRequestTimeout          = "MACHINARCHY_AGENT_REQUEST_TIMEOUT"
-	EnvDrainTimeout            = "MACHINARCHY_AGENT_DRAIN_TIMEOUT"
 	EnvShutdownTimeout         = "MACHINARCHY_AGENT_SHUTDOWN_TIMEOUT"
 	EnvStateFile               = "MACHINARCHY_AGENT_STATE_FILE"
 	EnvControllerPublicKey     = "MACHINARCHY_AGENT_CONTROLLER_PUBLIC_KEY"
@@ -64,6 +54,12 @@ var removedSettings = []string{
 	"MACHINARCHY_AGENT_EVENT_NAK_DELAY", "MACHINARCHY_AGENT_OPERATION_MAX_INPUT_BYTES",
 	"MACHINARCHY_AGENT_RESULT_PUBLISH_TIMEOUT", "MACHINARCHY_AGENT_OPERATION_STORE_FILE",
 	"MACHINARCHY_AGENT_EXECUTION_ENABLED",
+	// ADR-059: agents reach the controller only through its gateway. The broker
+	// address and credentials are gone; there is no compatibility path.
+	"MACHINARCHY_AGENT_NATS_URL", "MACHINARCHY_AGENT_NATS_CREDENTIALS_FILE", "MACHINARCHY_AGENT_NATS_TOKEN",
+	"MACHINARCHY_AGENT_NATS_USERNAME", "MACHINARCHY_AGENT_NATS_PASSWORD", "MACHINARCHY_AGENT_NATS_CA_FILE",
+	"MACHINARCHY_AGENT_NATS_CERT_FILE", "MACHINARCHY_AGENT_NATS_KEY_FILE", "MACHINARCHY_AGENT_NAME",
+	"MACHINARCHY_AGENT_CONNECT_TIMEOUT", "MACHINARCHY_AGENT_RECONNECT_WAIT", "MACHINARCHY_AGENT_DRAIN_TIMEOUT",
 }
 
 // Limits for operator-tunable values.
@@ -79,37 +75,19 @@ const (
 	Development = "development"
 )
 
-// NATS holds broker connection settings.
-type NATS struct {
-	URLs            []string
-	ClientName      string
-	CredentialsFile string
-	Token           string
-	Username        string
-	Password        string
-	CAFile          string
-	CertFile        string
-	KeyFile         string
-	ConnectTimeout  time.Duration
-	ReconnectWait   time.Duration
-	DrainTimeout    time.Duration
-}
-
-// UsesTLS reports whether every endpoint is tls://.
-func (n NATS) UsesTLS() bool {
-	for _, u := range n.URLs {
-		if !strings.HasPrefix(u, "tls://") {
-			return false
-		}
-	}
-	return len(n.URLs) > 0
+// Server is how the agent reaches the controller's agent gateway.
+type Server struct {
+	// URL is https://host[:port] (http:// only in development).
+	URL string
+	// CAFile adds trusted roots for the controller's certificate.
+	CAFile string
 }
 
 // Config is the validated agent configuration.
 type Config struct {
 	Environment string
 	LogLevel    slog.Level
-	NATS        NATS
+	Server      Server
 	StateFile   string
 	// ControllerPublicKeys are the pinned controller keys: one normally, two
 	// (current and next) during a signing-key rotation.
@@ -149,15 +127,9 @@ func Load(getenv func(string) string) (Config, error) {
 
 	cfg := Config{
 		Environment: strings.ToLower(get(EnvEnvironment, Production)),
-		NATS: NATS{
-			ClientName:      get(EnvAgentName, "machinarchy-agent"),
-			CredentialsFile: get(EnvNATSCredentialsFile, ""),
-			Token:           getenv(EnvNATSToken),
-			Username:        getenv(EnvNATSUsername),
-			Password:        getenv(EnvNATSPassword),
-			CAFile:          get(EnvNATSCAFile, ""),
-			CertFile:        get(EnvNATSCertFile, ""),
-			KeyFile:         get(EnvNATSKeyFile, ""),
+		Server: Server{
+			URL:    strings.TrimRight(get(EnvServerURL, ""), "/"),
+			CAFile: get(EnvServerCAFile, ""),
 		},
 		Services: capabilities.ServiceOptions{SystemctlPath: get(EnvSystemctlPath, "/usr/bin/systemctl")},
 	}
@@ -168,12 +140,6 @@ func Load(getenv func(string) string) (Config, error) {
 	if cfg.LogLevel, err = parseLevel(get(EnvLogLevel, "info")); err != nil {
 		return Config{}, err
 	}
-	for _, raw := range strings.Split(getenv(EnvNATSURL), ",") {
-		if raw = strings.TrimSpace(raw); raw != "" {
-			cfg.NATS.URLs = append(cfg.NATS.URLs, raw)
-		}
-	}
-
 	if cfg.StateFile, err = StateFilePath(getenv); err != nil {
 		return Config{}, err
 	}
@@ -184,9 +150,6 @@ func Load(getenv func(string) string) (Config, error) {
 		fallback time.Duration
 		max      time.Duration
 	}{
-		{EnvConnectTimeout, &cfg.NATS.ConnectTimeout, 5 * time.Second, time.Minute},
-		{EnvReconnectWait, &cfg.NATS.ReconnectWait, 2 * time.Second, time.Minute},
-		{EnvDrainTimeout, &cfg.NATS.DrainTimeout, 5 * time.Second, time.Minute},
 		{EnvRequestTimeout, &cfg.RequestTimeout, 5 * time.Second, time.Minute},
 		{EnvShutdownTimeout, &cfg.ShutdownTimeout, 20 * time.Second, 5 * time.Minute},
 		{EnvOperationTimeout, &cfg.MaxOperationTimeout, 5 * time.Minute, agentv1.MaxOperationTimeout},
@@ -261,54 +224,15 @@ func StateFilePath(getenv func(string) string) (string, error) {
 
 // Validate checks cross-field rules.
 func (c Config) Validate() error {
-	if len(c.NATS.URLs) == 0 {
-		return fmt.Errorf("%s is required", EnvNATSURL)
+	if c.Server.URL == "" {
+		return fmt.Errorf("%s is required", EnvServerURL)
 	}
-	for _, raw := range c.NATS.URLs {
-		u, err := url.Parse(raw)
-		if err != nil || (u.Scheme != "nats" && u.Scheme != "tls") || u.Hostname() == "" || u.User != nil ||
-			(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
-			return fmt.Errorf("%s entries must be nats://host:port or tls://host:port without credentials", EnvNATSURL)
-		}
+	if _, _, err := transport.ParseServerURL(c.Server.URL, c.Environment == Development); err != nil {
+		return fmt.Errorf("%s: %w", EnvServerURL, err)
 	}
-	if !validLine(c.NATS.ClientName, 128) {
-		return fmt.Errorf("%s must be a single line of at most 128 characters", EnvAgentName)
-	}
-	methods := 0
-	for _, set := range []bool{c.NATS.CredentialsFile != "", c.NATS.Token != "", c.NATS.Username != "" || c.NATS.Password != ""} {
-		if set {
-			methods++
-		}
-	}
-	if methods > 1 {
-		return errors.New("configure exactly one NATS authentication method: credentials file, token, or username/password")
-	}
-	if (c.NATS.Username == "") != (c.NATS.Password == "") {
-		return fmt.Errorf("%s and %s must be set together", EnvNATSUsername, EnvNATSPassword)
-	}
-	if (c.NATS.CertFile == "") != (c.NATS.KeyFile == "") {
-		return fmt.Errorf("%s and %s must be set together", EnvNATSCertFile, EnvNATSKeyFile)
-	}
-	for key, path := range map[string]string{EnvNATSCredentialsFile: c.NATS.CredentialsFile, EnvNATSKeyFile: c.NATS.KeyFile} {
-		if path != "" {
-			if err := checkPrivateFile(key, path); err != nil {
-				return err
-			}
-		}
-	}
-	for key, path := range map[string]string{EnvNATSCAFile: c.NATS.CAFile, EnvNATSCertFile: c.NATS.CertFile} {
-		if path != "" {
-			if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
-				return fmt.Errorf("%s must reference a readable regular file", key)
-			}
-		}
-	}
-	if c.Environment == Production {
-		if !c.NATS.UsesTLS() {
-			return fmt.Errorf("production requires tls:// endpoints in %s", EnvNATSURL)
-		}
-		if methods == 0 && c.NATS.CertFile == "" {
-			return errors.New("production requires NATS authentication (credentials file, token, username/password, or client certificate)")
+	if c.Server.CAFile != "" {
+		if info, err := os.Stat(c.Server.CAFile); err != nil || !info.Mode().IsRegular() {
+			return fmt.Errorf("%s must reference a readable regular file", EnvServerCAFile)
 		}
 	}
 	if len(c.ControllerPublicKeys) == 0 || len(c.ControllerPublicKeys) > MaxControllerKeys {

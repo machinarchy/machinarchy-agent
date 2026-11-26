@@ -1,7 +1,7 @@
 # Machinarchy Agent
 
 A small, unprivileged host agent for the Machinarchy control plane. It
-connects outbound to NATS, enrolls with the controller, and runs a short list
+connects outbound to the controller's agent gateway (gRPC over TLS), enrolls, and runs a short list
 of explicitly enabled, bounded OS capabilities. There is no remote shell.
 
 | Capability | Purpose | Enabled by |
@@ -14,9 +14,9 @@ of explicitly enabled, bounded OS capabilities. There is no remote shell.
 ## How it works
 
 ```
-controller ──signed commands (JetStream)──▶ agent ──▶ capabilities ──▶ host
-     ▲                                        │
-     └────────── signed results (NATS) ◀──────┘
+controller ──signed commands (gateway stream)──▶ agent ──▶ capabilities ──▶ host
+     ▲                                                │
+     └────────── signed results (gateway) ◀───────────┘
 ```
 
 - **Enrollment and identity.**
@@ -24,9 +24,10 @@ controller ──signed commands (JetStream)──▶ agent ──▶ capabiliti
   - It enrolls with a single-use enrollment token that an owner issues for
     this host, then renews a lease on the controller's cadence. A revoked
     agent is refused when it tries again.
-  - With NATS in operator mode, it then connects with its own NATS user JWT,
-    limited to its own subjects, consumer and inbox (see
-    [docs/protocol.md](docs/protocol.md#nats-credentials)).
+  - It needs only the controller's server URL and the enrollment token: no
+    broker address or credential exists on the host. The controller's agent
+    gateway authenticates the agent by its signed requests and a short-lived
+    lease (see [docs/protocol.md](docs/protocol.md#transport)).
   - The controller's public key is pinned in configuration. Commands and
     responses not signed by it are rejected.
 - **At-most-once execution.**
@@ -48,14 +49,11 @@ by the integration tests.
 ## Quick start (development)
 
 Run machinarchy with its agent gateway enabled (see its
-`docs/operations.md#agent-gateway`; `go run ./deployments/nats/generate` there
-creates an operator-mode NATS setup), then point the agent at the same NATS:
+`docs/operations.md#agent-gateway`), then point the agent at the gateway URL:
 
 ```bash
-docker compose -f docker-compose.yml up -d          # local NATS with JetStream
 cp .env.example .env
-# MACHINARCHY_AGENT_NATS_URL=nats://127.0.0.1:4222
-# MACHINARCHY_AGENT_NATS_CREDENTIALS_FILE=<bootstrap.creds, in operator mode>
+# MACHINARCHY_AGENT_SERVER_URL=http://127.0.0.1:8443   (https:// outside development)
 # MACHINARCHY_AGENT_CONTROLLER_PUBLIC_KEY=<GET /api/v1/agents/controller-key>
 # MACHINARCHY_AGENT_ENROLLMENT_TOKEN_FILE=<a file holding the token from
 #   POST /api/v1/agents/enrollment-tokens, mode 0600>
@@ -83,7 +81,7 @@ Requires Go 1.27 (pinned toolchain `go1.27.4`).
 ```bash
 make check          # fmt, tidy, vet (host, linux/amd64, linux/arm64), race tests, lint, build, deployment checks
 make systemd-verify # systemd-analyze verify on the unit; uses a container when the host has no systemd
-make test-race      # both modules; integration tests run against an embedded nats-server
+make test-race      # both modules; integration tests run against the in-process fake controller
 make coverage       # race + coverage.out
 make fuzz           # protocol decoder fuzz targets for FUZZTIME (default 30s)
 make vuln gosec     # govulncheck (both modules) and gosec
@@ -95,11 +93,11 @@ machinarchy) lives in machinarchy's `test/e2e`; machinarchy's CI runs it.
 ## Configure
 
 Environment variables only, validated at startup (`--check-config`); keys and
-tokens may come from files. Required: `MACHINARCHY_AGENT_NATS_URL`,
+tokens may come from files. Required: `MACHINARCHY_AGENT_SERVER_URL`,
 `MACHINARCHY_AGENT_CONTROLLER_PUBLIC_KEY[_FILE]`, and an enrollment token on
 first start (single-use, issued per host by a machinarchy owner). Production
-(the default) requires NATS authentication and TLS; in operator mode the
-configured credential is only the bootstrap credential.
+(the default) requires an `https://` server URL; the certificate is always
+verified.
 Full reference: [docs/configuration.md](docs/configuration.md).
 
 ## Deploy and operate
@@ -113,7 +111,7 @@ Full reference: [docs/configuration.md](docs/configuration.md).
   (`MACHINARCHY_AGENT_METRICS_FILE`, [ADR-0004](docs/architecture/decisions/ADR-0004-metrics-textfile.md)).
 - Logs: JSON on stdout; failures carry the cause under `error`.
 - Shutdown: SIGTERM gives running operations `MACHINARCHY_AGENT_SHUTDOWN_TIMEOUT`
-  (default 20s), then drains NATS within `MACHINARCHY_AGENT_DRAIN_TIMEOUT`;
+  (default 20s), then closes the connection;
   anything cancelled is reported `unknown`, never replayed.
 - Failure modes: [docs/runbook.md](docs/runbook.md). Security model:
   [docs/security.md](docs/security.md).
@@ -126,7 +124,8 @@ Full reference: [docs/configuration.md](docs/configuration.md).
 | `protocol/agentv1` | Public wire contract (standard library only) |
 | `internal/config` | Environment configuration and validation |
 | `internal/state` | Single atomic state file (key, identity, ledger, operations) |
-| `internal/app` | NATS connection, enrollment, lease, command consumer |
+| `internal/app` | Enrollment, lease, command stream consumer |
+| `internal/transport` | gRPC client of the controller's agent gateway |
 | `internal/dispatch` | Bounded execution, recovery, result outbox |
 | `internal/capabilities` | Host capabilities |
 | `internal/fakecontroller` | Reference controller used by integration tests |

@@ -21,7 +21,7 @@ func env(values map[string]string) func(string) string {
 func devEnv(extra map[string]string) func(string) string {
 	values := map[string]string{
 		EnvEnvironment:         Development,
-		EnvNATSURL:             "nats://127.0.0.1:4222",
+		EnvServerURL:           "http://127.0.0.1:8443",
 		EnvControllerPublicKey: controllerKey,
 	}
 	for k, v := range extra {
@@ -56,27 +56,41 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
-func TestDefaultEnvironmentIsProductionAndEnforcesTLSAndAuth(t *testing.T) {
-	base := map[string]string{EnvNATSURL: "nats://broker:4222", EnvControllerPublicKey: controllerKey}
-	if _, err := Load(env(base)); err == nil || !strings.Contains(err.Error(), "tls://") {
-		t.Fatalf("plaintext NATS accepted by default environment: %v", err)
+func TestDefaultEnvironmentIsProductionAndEnforcesTLS(t *testing.T) {
+	base := map[string]string{EnvServerURL: "http://controller:8443", EnvControllerPublicKey: controllerKey}
+	if _, err := Load(env(base)); err == nil || !strings.Contains(err.Error(), "https") {
+		t.Fatalf("plaintext server URL accepted by default environment: %v", err)
 	}
-	base[EnvNATSURL] = "tls://broker:4222"
-	if _, err := Load(env(base)); err == nil || !strings.Contains(err.Error(), "authentication") {
-		t.Fatalf("unauthenticated production config accepted: %v", err)
-	}
-	base[EnvNATSCredentialsFile] = writeFile(t, "creds", 0o600)
+	base[EnvServerURL] = "https://controller.example.com"
 	cfg, err := Load(env(base))
 	if err != nil {
 		t.Fatalf("valid production config rejected: %v", err)
 	}
-	if cfg.Environment != Production || cfg.StateFile != "/var/lib/machinarchy-agent/state.json" {
+	if cfg.Environment != Production || cfg.StateFile != "/var/lib/machinarchy-agent/state.json" || cfg.Server.URL != base[EnvServerURL] {
 		t.Fatalf("unexpected production defaults: %+v", cfg)
 	}
 }
 
+func TestServerURLRequired(t *testing.T) {
+	values := map[string]string{EnvEnvironment: Development, EnvControllerPublicKey: controllerKey}
+	if _, err := Load(env(values)); err == nil || !strings.Contains(err.Error(), EnvServerURL) {
+		t.Fatalf("missing server URL accepted: %v", err)
+	}
+}
+
+// ADR-059 / Q7: the broker settings are gone, not aliased; naming them is an
+// error so an operator does not believe they still apply.
+func TestBrokerSettingsAreRefused(t *testing.T) {
+	for _, key := range []string{"MACHINARCHY_AGENT_NATS_URL", "MACHINARCHY_AGENT_NATS_TOKEN", "MACHINARCHY_AGENT_NATS_CREDENTIALS_FILE",
+		"MACHINARCHY_AGENT_NATS_CA_FILE", "MACHINARCHY_AGENT_NAME", "MACHINARCHY_AGENT_DRAIN_TIMEOUT"} {
+		if _, err := Load(devEnv(map[string]string{key: "x"})); err == nil || !strings.Contains(err.Error(), key) {
+			t.Errorf("%s accepted or not named: %v", key, err)
+		}
+	}
+}
+
 func TestControllerKeyIsRequired(t *testing.T) {
-	values := map[string]string{EnvEnvironment: Development, EnvNATSURL: "nats://h:1"}
+	values := map[string]string{EnvEnvironment: Development, EnvServerURL: "http://h:1"}
 	if _, err := Load(env(values)); err == nil {
 		t.Fatal("missing controller key accepted")
 	}
@@ -112,11 +126,10 @@ func TestRejectsInvalidSettings(t *testing.T) {
 	cases := map[string]map[string]string{
 		"removed setting":       {"MACHINARCHY_AGENT_JETSTREAM_STREAM": "X"},
 		"bad environment":       {EnvEnvironment: "staging"},
-		"bad url scheme":        {EnvNATSURL: "http://h:1"},
-		"url with credentials":  {EnvNATSURL: "nats://user:pw@h:1"},
-		"two auth methods":      {EnvNATSToken: "t", EnvNATSUsername: "u", EnvNATSPassword: "p"},
-		"username only":         {EnvNATSUsername: "u"},
-		"cert without key":      {EnvNATSCertFile: "/x"},
+		"bad url scheme":        {EnvServerURL: "nats://h:1"},
+		"url with credentials":  {EnvServerURL: "http://user:pw@h:1"},
+		"url with path":         {EnvServerURL: "http://h:1/api"},
+		"missing ca file":       {EnvServerCAFile: "/nonexistent/ca.pem"},
 		"bad duration":          {EnvRequestTimeout: "forever"},
 		"duration too long":     {EnvShutdownTimeout: "1h"},
 		"zero workers":          {EnvOperationWorkers: "0"},
@@ -127,7 +140,6 @@ func TestRejectsInvalidSettings(t *testing.T) {
 		"list without mgmt":     {EnvServiceAllowlist: "nginx.service"},
 		"bad unit":              {EnvServiceManagement: "true", EnvServiceAllowlist: "nginx.socket"},
 		"bad log level":         {EnvLogLevel: "trace"},
-		"multiline name":        {EnvAgentName: "a\nb"},
 	}
 	for name, extra := range cases {
 		if _, err := Load(devEnv(extra)); err == nil {
@@ -137,16 +149,16 @@ func TestRejectsInvalidSettings(t *testing.T) {
 }
 
 func TestPrivateFileChecks(t *testing.T) {
-	if _, err := Load(devEnv(map[string]string{EnvNATSCredentialsFile: writeFile(t, "c", 0o644)})); err == nil {
-		t.Fatal("world-readable credentials file accepted")
+	if _, err := Load(devEnv(map[string]string{EnvEnrollmentTokenFile: writeFile(t, strings.Repeat("e", 40), 0o644)})); err == nil {
+		t.Fatal("world-readable token file accepted")
 	}
-	target := writeFile(t, "c", 0o600)
+	target := writeFile(t, strings.Repeat("e", 40), 0o600)
 	link := filepath.Join(t.TempDir(), "link")
 	if err := os.Symlink(target, link); err != nil {
 		t.Skip(err)
 	}
-	if _, err := Load(devEnv(map[string]string{EnvNATSCredentialsFile: link})); err == nil {
-		t.Fatal("symlinked credentials file accepted")
+	if _, err := Load(devEnv(map[string]string{EnvEnrollmentTokenFile: link})); err == nil {
+		t.Fatal("symlinked token file accepted")
 	}
 }
 
