@@ -16,14 +16,14 @@ import (
 
 func TestRenderIsPrometheusText(t *testing.T) {
 	r := &Recorder{}
-	r.NATSReconnected()
-	r.NATSDisconnected()
-	r.NATSDisconnected()
+	r.ControllerReconnected()
+	r.ControllerDisconnected()
+	r.ControllerDisconnected()
 	r.LeaseRenewed(time.Unix(1700000000, 0))
 	now := time.Unix(1700000100, 500_000_000)
 	var out strings.Builder
 	err := Render(&out, r, Gauges{
-		Version: "1.2.3", Enrolled: true, NATSConnected: true, LeaseExpiresAt: time.Unix(1700000060, 0),
+		Version: "1.2.3", Enrolled: true, ControllerConnected: true, LeaseExpiresAt: time.Unix(1700000060, 0),
 		Operations:         map[OperationKey]int{{Phase: "running"}: 1, {Phase: "done", Status: "succeeded"}: 4, {Phase: "done", Status: "unknown"}: 1},
 		ResultsAwaitingAck: 2, QueueDepth: 3, Running: 1, QueueSize: 32,
 	}, now)
@@ -35,9 +35,9 @@ func TestRenderIsPrometheusText(t *testing.T) {
 		`machinarchy_agent_info{version="1.2.3"} 1`,
 		"machinarchy_agent_metrics_written_timestamp_seconds 1700000100.500",
 		"machinarchy_agent_enrolled 1",
-		"machinarchy_agent_nats_connected 1",
-		"machinarchy_agent_nats_reconnects_total 1",
-		"machinarchy_agent_nats_disconnects_total 2",
+		"machinarchy_agent_controller_connected 1",
+		"machinarchy_agent_controller_reconnects_total 1",
+		"machinarchy_agent_controller_disconnects_total 2",
 		"machinarchy_agent_lease_expiry_timestamp_seconds 1700000060.000",
 		"machinarchy_agent_lease_renewed_timestamp_seconds 1700000000.000",
 		`machinarchy_agent_operations{phase="done",status="succeeded"} 4`,
@@ -49,7 +49,7 @@ func TestRenderIsPrometheusText(t *testing.T) {
 		"machinarchy_agent_dispatch_running 1",
 		`machinarchy_agent_log_messages_total{level="error"} 0`,
 		"machinarchy_agent_last_error_timestamp_seconds 0",
-		"# TYPE machinarchy_agent_nats_reconnects_total counter",
+		"# TYPE machinarchy_agent_controller_reconnects_total counter",
 	} {
 		if !strings.Contains(text, want+"\n") {
 			t.Errorf("missing %q", want)
@@ -71,7 +71,7 @@ func TestRenderIsPrometheusText(t *testing.T) {
 		}
 	}
 	var again strings.Builder
-	_ = Render(&again, r, Gauges{Version: "1.2.3", Enrolled: true, NATSConnected: true, LeaseExpiresAt: time.Unix(1700000060, 0),
+	_ = Render(&again, r, Gauges{Version: "1.2.3", Enrolled: true, ControllerConnected: true, LeaseExpiresAt: time.Unix(1700000060, 0),
 		Operations:         map[OperationKey]int{{Phase: "running"}: 1, {Phase: "done", Status: "succeeded"}: 4, {Phase: "done", Status: "unknown"}: 1},
 		ResultsAwaitingAck: 2, QueueDepth: 3, Running: 1, QueueSize: 32}, now)
 	if again.String() != text {
@@ -135,7 +135,7 @@ func TestWriterWritesAtOnceOnEachTickAndAtTheEnd(t *testing.T) {
 	connected := atomic.Bool{}
 	connected.Store(true)
 	w := &Writer{Path: path, Interval: 20 * time.Millisecond, Recorder: &Recorder{}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Collect: func() Gauges { collected.Add(1); return Gauges{NATSConnected: connected.Load()} }}
+		Collect: func() Gauges { collected.Add(1); return Gauges{ControllerConnected: connected.Load()} }}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { defer close(done); w.Run(ctx) }()
@@ -147,7 +147,7 @@ func TestWriterWritesAtOnceOnEachTickAndAtTheEnd(t *testing.T) {
 	cancel()
 	<-done
 	got, err := os.ReadFile(path)
-	if err != nil || !strings.Contains(string(got), "machinarchy_agent_nats_connected 0\n") {
+	if err != nil || !strings.Contains(string(got), "machinarchy_agent_controller_connected 0\n") {
 		t.Fatalf("final write = %q, %v", got, err)
 	}
 }

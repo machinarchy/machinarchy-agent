@@ -1,8 +1,8 @@
 name: machinarchy-agent
 
 # Production profile. Secrets are bind-mounted files under ./secrets (0600,
-# owned by UID 10001): nats.creds and, until enrollment completes,
-# enrollment.token. MACHINARCHY_AGENT_NATS_URL and
+# owned by UID 10001): enrollment.token until enrollment completes, and an
+# optional ca.pem. MACHINARCHY_AGENT_SERVER_URL and
 # MACHINARCHY_AGENT_CONTROLLER_PUBLIC_KEY come from .env.
 services:
   agent:
@@ -15,7 +15,6 @@ services:
       MACHINARCHY_AGENT_STATE_FILE: /var/lib/machinarchy-agent/state.json
       MACHINARCHY_AGENT_SERVICE_MANAGEMENT_ENABLED: "false"
       MACHINARCHY_AGENT_SERVICE_CONTROL_ENABLED: "false"
-      MACHINARCHY_AGENT_NATS_CREDENTIALS_FILE: /run/secrets/nats.creds
       MACHINARCHY_AGENT_ENROLLMENT_TOKEN_FILE: ${MACHINARCHY_AGENT_ENROLLMENT_TOKEN_FILE:-}
     volumes:
       - agent-state:/var/lib/machinarchy-agent

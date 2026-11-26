@@ -1,26 +1,30 @@
 // Package fakecontroller is an in-process implementation of the controller
-// side of protocol/agentv1. Integration tests run the real agent against it,
-// and it doubles as an executable reference for the machinarchy controller:
-// enrollment, signed responses, JetStream provisioning, command publishing,
-// result verification and acknowledgement.
+// side of the agent gateway (ADR-059): the gRPC service the real controller
+// serves, over signed agentv1 envelopes. Integration tests run the real agent
+// against it, and it doubles as an executable reference for the machinarchy
+// controller: enrolment, signed responses, lease-bound command streams,
+// at-least-once command delivery, and result verification.
 package fakecontroller
 
 import (
 	"context"
 	"crypto/ed25519"
 	"crypto/subtle"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
-	"github.com/nats-io/nkeys"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/status"
 
 	"github.com/machinarchy/machinarchy-agent/protocol/agentv1"
 )
@@ -31,16 +35,18 @@ type Controller struct {
 	EnrollmentToken string
 	LeaseTTL        time.Duration
 	Heartbeat       time.Duration
-	// issuer, when set, issues per-agent NATS user JWTs (operator mode).
-	issuer atomic.Pointer[NATSIssuer]
+	// AckWait is how long a delivered command may stay unacknowledged before
+	// it is delivered again.
+	AckWait time.Duration
 
-	nc   *nats.Conn
-	js   jetstream.JetStream
-	subs []*nats.Subscription
+	tlsConfig *tls.Config
+	addr      string
 
 	mu            sync.Mutex
-	agents        map[string]ed25519.PublicKey // agent ID -> key
-	registrations map[string]string            // request ID -> agent ID
+	server        *grpc.Server
+	agents        map[string]*agent
+	registrations map[string]string // request ID -> agent ID
+	seen          map[string]bool   // command IDs ever queued (de-duplication)
 	results       chan agentv1.Result
 	seq           atomic.Int64
 	errs          chan error
@@ -51,59 +57,89 @@ type Controller struct {
 	AutoAck atomic.Bool
 }
 
-// NATSIssuer signs per-agent NATS user JWTs with an account signing key.
-type NATSIssuer struct {
-	Signer  nkeys.KeyPair
-	Account string
-	TTL     time.Duration
+type agent struct {
+	key        ed25519.PublicKey
+	leaseID    string
+	leaseUntil time.Time
+	queue      [][]byte
+	wake       chan struct{}
 }
 
-// Start connects to NATS, provisions the command stream and serves
-// registration, lease renewal and results. options carry the controller's
-// NATS credentials in operator mode.
-func Start(ctx context.Context, url string, key ed25519.PrivateKey, enrollmentToken string, options ...nats.Option) (*Controller, error) {
-	nc, err := nats.Connect(url, append(options, nats.CustomInboxPrefix(agentv1.ControllerInboxPrefix))...)
-	if err != nil {
-		return nil, err
-	}
-	js, err := jetstream.New(nc)
-	if err != nil {
-		nc.Close()
-		return nil, err
-	}
-	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name: agentv1.CommandStream, Subjects: []string{agentv1.SubjectAllCommands},
-		Storage: jetstream.FileStorage, MaxAge: time.Hour, Duplicates: 10 * time.Minute,
-	}); err != nil {
-		nc.Close()
-		return nil, fmt.Errorf("create command stream: %w", err)
-	}
+// Option configures Start.
+type Option func(*Controller)
+
+// WithTLS serves over TLS with the given configuration.
+func WithTLS(config *tls.Config) Option { return func(c *Controller) { c.tlsConfig = config } }
+
+// WithAddress listens on addr (host:port) instead of a free loopback port.
+func WithAddress(addr string) Option { return func(c *Controller) { c.addr = addr } }
+
+// Start listens and serves the agent gateway until Close.
+func Start(_ context.Context, key ed25519.PrivateKey, enrollmentToken string, options ...Option) (*Controller, error) {
 	c := &Controller{Key: key, EnrollmentToken: enrollmentToken, LeaseTTL: time.Minute, Heartbeat: 5 * time.Second,
-		nc: nc, js: js, agents: map[string]ed25519.PublicKey{}, registrations: map[string]string{},
-		results: make(chan agentv1.Result, 256), errs: make(chan error, 64)}
+		AckWait: 2 * time.Second, addr: "127.0.0.1:0", agents: map[string]*agent{}, registrations: map[string]string{},
+		seen: map[string]bool{}, results: make(chan agentv1.Result, 256), errs: make(chan error, 64)}
 	c.AutoAck.Store(true)
-	for subject, handler := range map[string]nats.MsgHandler{
-		agentv1.SubjectRegister:   c.onRegister,
-		agentv1.SubjectLeaseRenew: c.onRenew,
-		agentv1.SubjectAllResults: c.onResult,
-	} {
-		sub, err := nc.Subscribe(subject, handler)
-		if err != nil {
-			c.Close()
-			return nil, err
-		}
-		c.subs = append(c.subs, sub)
+	for _, option := range options {
+		option(c)
 	}
-	return c, nc.Flush()
+	if err := c.Resume(); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// URL is the server URL agents are configured with.
+func (c *Controller) URL() string {
+	scheme := "http"
+	if c.tlsConfig != nil {
+		scheme = "https"
+	}
+	return scheme + "://" + c.addr
+}
+
+// Resume starts serving again after Stop, on the same address and with all
+// enrolments and queued commands intact (a controller restart or a network
+// that comes back).
+func (c *Controller) Resume() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.server != nil {
+		return nil
+	}
+	l, err := net.Listen("tcp", c.addr)
+	if err != nil {
+		return err
+	}
+	c.addr = l.Addr().String()
+	options := []grpc.ServerOption{grpc.ForceServerCodecV2(codec{}), grpc.MaxRecvMsgSize(agentv1.MaxResultMessageBytes)}
+	if c.tlsConfig != nil {
+		options = append(options, grpc.Creds(credentials.NewTLS(c.tlsConfig)))
+	}
+	server := grpc.NewServer(options...)
+	server.RegisterService(&serviceDesc, c)
+	c.server = server
+	go func() {
+		if err := server.Serve(l); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+			c.report(err)
+		}
+	}()
+	return nil
+}
+
+// Stop drops every connection and stops answering until Resume.
+func (c *Controller) Stop() {
+	c.mu.Lock()
+	server := c.server
+	c.server = nil
+	c.mu.Unlock()
+	if server != nil {
+		server.Stop()
+	}
 }
 
 // Close stops serving.
-func (c *Controller) Close() {
-	for _, sub := range c.subs {
-		c.report(sub.Unsubscribe())
-	}
-	c.nc.Close()
-}
+func (c *Controller) Close() { c.Stop() }
 
 // Errors exposes internal failures (bounded; extra errors are dropped).
 func (c *Controller) Errors() <-chan error { return c.errs }
@@ -135,118 +171,74 @@ func (c *Controller) Agents() []string {
 func (c *Controller) keyFor(agentID string) (ed25519.PublicKey, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	key, ok := c.agents[agentID]
-	return key, ok
+	a, ok := c.agents[agentID]
+	if !ok {
+		return nil, false
+	}
+	return a.key, true
 }
 
-func (c *Controller) reply(msg *nats.Msg, kind agentv1.Kind, body agentv1.Body) {
+func (c *Controller) seal(kind agentv1.Kind, body agentv1.Body) (*frame, error) {
 	payload, err := agentv1.Seal(c.Key, kind, body)
 	if err != nil {
 		c.report(err)
-		return
+		return nil, status.Error(codes.Internal, "cannot sign the answer")
 	}
-	c.report(msg.Respond(payload))
+	return &frame{data: payload}, nil
 }
+
+var errInvalid = status.Error(codes.InvalidArgument, "invalid request")
 
 func (c *Controller) lease() *agentv1.Lease {
 	return &agentv1.Lease{LeaseID: fmt.Sprintf("lease-%d", c.seq.Add(1)), ExpiresAt: time.Now().Add(c.LeaseTTL).UTC(),
 		HeartbeatIntervalMillis: c.Heartbeat.Milliseconds()}
 }
 
-func (c *Controller) onRegister(msg *nats.Msg) {
-	request, err := agentv1.OpenRegisterRequest(msg.Data)
+func (c *Controller) register(_ context.Context, in *frame) (*frame, error) {
+	request, err := agentv1.OpenRegisterRequest(in.data)
 	if err != nil {
-		return // unauthenticated: no response
+		return nil, errInvalid // unauthenticated: no signed answer
 	}
 	response := &agentv1.RegisterResponse{ProtocolVersion: agentv1.ProtocolVersion, RequestID: request.RequestID}
 	if subtle.ConstantTimeCompare([]byte(request.EnrollmentToken), []byte(c.EnrollmentToken)) != 1 {
 		response.Error = &agentv1.Error{Code: agentv1.ErrorEnrollmentRejected}
-		c.reply(msg, agentv1.KindRegisterResponse, response)
-		return
+		return c.seal(agentv1.KindRegisterResponse, response)
 	}
+	lease := c.lease()
 	c.mu.Lock()
 	agentID, retried := c.registrations[request.RequestID]
 	if !retried {
 		agentID = "agent-" + hex.EncodeToString(request.AgentPublicKey[:8])
 		c.registrations[request.RequestID] = agentID
-		c.agents[agentID] = ed25519.PublicKey(request.AgentPublicKey)
+		c.agents[agentID] = &agent{key: ed25519.PublicKey(request.AgentPublicKey), wake: make(chan struct{}, 1)}
 	}
+	c.agents[agentID].leaseID, c.agents[agentID].leaseUntil = lease.LeaseID, lease.ExpiresAt
 	c.mu.Unlock()
-	if err := c.provision(agentID); err != nil {
-		response.Error = &agentv1.Error{Code: agentv1.ErrorUnavailable, Retryable: true}
-		c.reply(msg, agentv1.KindRegisterResponse, response)
-		return
-	}
-	response.AgentID, response.HostID, response.Lease = agentID, "host-"+agentID, c.lease()
-	if response.NATSUserJWT, err = c.mint(ed25519.PublicKey(request.AgentPublicKey), agentID); err != nil {
-		c.report(err)
-		response.AgentID, response.HostID, response.Lease, response.NATSUserJWT = "", "", nil, ""
-		response.Error = &agentv1.Error{Code: agentv1.ErrorUnavailable, Retryable: true}
-	}
-	c.reply(msg, agentv1.KindRegisterResponse, response)
+	response.AgentID, response.HostID, response.Lease = agentID, "host-"+agentID, lease
+	return c.seal(agentv1.KindRegisterResponse, response)
 }
 
-// IssueNATSCredentials makes registration and renewal responses carry a
-// per-agent NATS user JWT.
-func (c *Controller) IssueNATSCredentials(issuer *NATSIssuer) { c.issuer.Store(issuer) }
-
-// mint returns a NATS user JWT for the agent, or "" without an issuer.
-func (c *Controller) mint(key ed25519.PublicKey, agentID string) (string, error) {
-	issuer := c.issuer.Load()
-	if issuer == nil {
-		return "", nil
-	}
-	return MintAgentJWT(issuer.Signer, issuer.Account, key, agentID, issuer.TTL)
-}
-
-// provision creates the agent's durable pull consumer.
-func (c *Controller) provision(agentID string) error {
-	subject, err := agentv1.CommandSubject(agentID)
-	if err != nil {
-		return err
-	}
-	name, err := agentv1.CommandConsumer(agentID)
-	if err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_, err = c.js.CreateOrUpdateConsumer(ctx, agentv1.CommandStream, jetstream.ConsumerConfig{
-		Durable: name, FilterSubject: subject, AckPolicy: jetstream.AckExplicitPolicy,
-		AckWait: 10 * time.Second, MaxDeliver: 20, DeliverPolicy: jetstream.DeliverAllPolicy,
-	})
-	return err
-}
-
-func (c *Controller) onRenew(msg *nats.Msg) {
+func (c *Controller) renew(_ context.Context, in *frame) (*frame, error) {
 	var request agentv1.RenewRequest
-	if err := agentv1.OpenFromAgent(agentv1.KindRenewRequest, msg.Data, agentv1.MaxControlMessageBytes, c.keyFor, &request); err != nil {
-		return
+	if err := agentv1.OpenFromAgent(agentv1.KindRenewRequest, in.data, agentv1.MaxControlMessageBytes, c.keyFor, &request); err != nil {
+		return nil, errInvalid
 	}
 	response := &agentv1.RenewResponse{ProtocolVersion: agentv1.ProtocolVersion, RequestID: request.RequestID, AgentID: request.AgentID}
 	if c.RevokeRenewals.Load() {
 		response.Error = &agentv1.Error{Code: agentv1.ErrorLeaseRevoked}
 	} else {
 		response.Lease = c.lease()
-		key, _ := c.keyFor(request.AgentID)
-		jwt, err := c.mint(key, request.AgentID)
-		if err != nil {
-			c.report(err)
-			return
-		}
-		response.NATSUserJWT = jwt
+		c.mu.Lock()
+		c.agents[request.AgentID].leaseID, c.agents[request.AgentID].leaseUntil = response.Lease.LeaseID, response.Lease.ExpiresAt
+		c.mu.Unlock()
 	}
-	c.reply(msg, agentv1.KindRenewResponse, response)
+	return c.seal(agentv1.KindRenewResponse, response)
 }
 
-func (c *Controller) onResult(msg *nats.Msg) {
+func (c *Controller) sendResult(_ context.Context, in *frame) (*frame, error) {
 	var result agentv1.Result
-	if err := agentv1.OpenFromAgent(agentv1.KindResult, msg.Data, agentv1.MaxResultMessageBytes, c.keyFor, &result); err != nil {
-		return
-	}
-	// The subject must match the signer so one agent cannot report for another.
-	if expected, err := agentv1.ResultSubject(result.AgentID); err != nil || msg.Subject != expected {
-		return
+	if err := agentv1.OpenFromAgent(agentv1.KindResult, in.data, agentv1.MaxResultMessageBytes, c.keyFor, &result); err != nil {
+		return nil, status.Error(codes.Unauthenticated, "not authorized")
 	}
 	select {
 	case c.results <- result:
@@ -254,6 +246,90 @@ func (c *Controller) onResult(msg *nats.Msg) {
 	}
 	if result.Status.Terminal() && c.AutoAck.Load() {
 		c.report(c.Send(context.Background(), result.AgentID, agentv1.Command{Type: agentv1.CommandResultAck, OperationID: result.OperationID}))
+	}
+	return &frame{}, nil
+}
+
+// commands serves one stream: the opening request proves identity and lease,
+// then queued commands are delivered one at a time until acknowledged.
+func (c *Controller) commands(stream grpc.ServerStream) error {
+	ctx := stream.Context()
+	var open frame
+	if err := stream.RecvMsg(&open); err != nil {
+		return err
+	}
+	var request agentv1.RenewRequest
+	if err := agentv1.OpenFromAgent(agentv1.KindRenewRequest, open.data, agentv1.MaxControlMessageBytes, c.keyFor, &request); err != nil {
+		return status.Error(codes.Unauthenticated, "not authorized")
+	}
+	if d := time.Since(request.SentAt); d > agentv1.MaxClockSkew || d < -agentv1.MaxClockSkew {
+		return status.Error(codes.Unauthenticated, "not authorized")
+	}
+	c.mu.Lock()
+	a := c.agents[request.AgentID]
+	valid := a.leaseID == request.LeaseID && time.Now().Before(a.leaseUntil)
+	c.mu.Unlock()
+	if !valid {
+		return status.Error(codes.PermissionDenied, "lease expired or unknown")
+	}
+	acks := make(chan string, 1)
+	go func() {
+		for {
+			var in frame
+			if err := stream.RecvMsg(&in); err != nil {
+				close(acks)
+				return
+			}
+			select {
+			case acks <- string(in.data):
+			default:
+			}
+		}
+	}()
+	for {
+		payload, ok := c.head(ctx, a)
+		if !ok {
+			return ctx.Err()
+		}
+		if err := stream.SendMsg(&frame{data: payload}); err != nil {
+			return err
+		}
+		select {
+		case _, more := <-acks:
+			if !more {
+				return nil
+			}
+			c.pop(a, payload)
+		case <-time.After(c.AckWait): // not acknowledged: deliver it again
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+// head waits for the oldest queued command.
+func (c *Controller) head(ctx context.Context, a *agent) ([]byte, bool) {
+	for {
+		c.mu.Lock()
+		if len(a.queue) > 0 {
+			payload := a.queue[0]
+			c.mu.Unlock()
+			return payload, true
+		}
+		c.mu.Unlock()
+		select {
+		case <-a.wake:
+		case <-ctx.Done():
+			return nil, false
+		}
+	}
+}
+
+func (c *Controller) pop(a *agent, payload []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(a.queue) > 0 && string(a.queue[0]) == string(payload) {
+		a.queue = a.queue[1:]
 	}
 }
 
@@ -268,14 +344,14 @@ func (c *Controller) Request(ctx context.Context, agentID, capability string, in
 		Capability: capability, Input: encoded, TimeoutMillis: timeout.Milliseconds()})
 }
 
-// Send fills in envelope fields, signs and publishes cmd with JetStream
-// de-duplication on the command ID.
+// Send fills in envelope fields, signs and queues cmd for the agent; a command
+// ID queued twice is delivered once.
 func (c *Controller) Send(ctx context.Context, agentID string, cmd agentv1.Command) error {
 	return c.SendSignedBy(ctx, c.Key, agentID, cmd)
 }
 
 // SendSignedBy is Send with an arbitrary key, for forgery tests.
-func (c *Controller) SendSignedBy(ctx context.Context, key ed25519.PrivateKey, agentID string, cmd agentv1.Command) error {
+func (c *Controller) SendSignedBy(_ context.Context, key ed25519.PrivateKey, agentID string, cmd agentv1.Command) error {
 	now := time.Now().UTC()
 	cmd.ProtocolVersion = agentv1.ProtocolVersion
 	if cmd.CommandID == "" {
@@ -291,12 +367,22 @@ func (c *Controller) SendSignedBy(ctx context.Context, key ed25519.PrivateKey, a
 	if err != nil {
 		return err
 	}
-	subject, err := agentv1.CommandSubject(agentID)
-	if err != nil {
-		return err
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	a, ok := c.agents[agentID]
+	if !ok {
+		return fmt.Errorf("unknown agent %q", agentID)
 	}
-	_, err = c.js.Publish(ctx, subject, payload, jetstream.WithMsgID(cmd.CommandID))
-	return err
+	if c.seen[cmd.CommandID] {
+		return nil
+	}
+	c.seen[cmd.CommandID] = true
+	a.queue = append(a.queue, payload)
+	select {
+	case a.wake <- struct{}{}:
+	default:
+	}
+	return nil
 }
 
 // Await waits for a result for operationID matching status.

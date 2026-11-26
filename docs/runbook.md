@@ -8,7 +8,7 @@ machinarchy's `docs/runbook.md`.
 
 | Output | Cause | Fix |
 |---|---|---|
-| `invalid configuration: ...` (exit 2) | A setting is missing or invalid. | `machinarchy-agent --check-config` names it. Production requires NATS authentication and TLS. |
+| `invalid configuration: ...` (exit 2) | A setting is missing or invalid. | `machinarchy-agent --check-config` names it. Production requires an `https://` server URL. |
 | `unsupported settings are set (remove them)` | A setting from an older version is still set. | Remove the listed variables. |
 | `agent is not registered and no enrollment token is configured` | No identity in the state file and no token. | Set `MACHINARCHY_AGENT_ENROLLMENT_TOKEN[_FILE]`. |
 | `controller rejected enrollment ...` (exit 78) | Wrong token, or this key was revoked. | Use the controller's token. A revoked host is re-admitted only with a new key: stop the agent, delete the state file, start again. |
@@ -20,14 +20,14 @@ on it (`RestartPreventExitStatus=78`). Docker's restart policy cannot tell
 exit codes apart, so under compose stop the service (`docker compose stop`)
 until the host is re-enrolled. Every other failure exits 1 and is restarted.
 
-## NATS credentials (operator mode)
+## Connection to the controller
 
 | Log | Meaning | Action |
 |---|---|---|
-| `NATS credential expired; reconnecting with the renewed one` (info) | The server closed the connection when the agent's NATS user JWT expired. Expected once per JWT lifetime (1 hour by default). | None. |
-| `stored NATS credential has expired; connecting with the bootstrap credential to renew it` | The agent was down longer than the JWT lifetime. | None, if the bootstrap credential is configured. Without one, the agent cannot reconnect: configure `MACHINARCHY_AGENT_NATS_CREDENTIALS_FILE`. |
-| `asynchronous NATS error` with `Permissions Violation` | The agent touched a subject outside its permissions. This means a version mismatch with the controller, or a tampered state file. | Upgrade both sides together; if it persists, revoke the agent and re-enrol it. |
-| Repeated `disconnected from NATS` with `Authorization Violation` | The JWT was not accepted: wrong account, the controller's signing key changed, or the agent was revoked and its JWT has lapsed. | Check the controller's `MACHINARCHY_AGENT_GATEWAY_NATS_ACCOUNT*` settings. A revoked agent stays out by design. |
+| `registration failed; retrying` / `lease renewal failed; retrying` with `x509` | The controller's certificate is not trusted. There is no way to skip verification. | Install the controller's CA and set `MACHINARCHY_AGENT_SERVER_CA_FILE`, or fix the certificate. |
+| the same with `connection refused`, `Unavailable` or a timeout | The server URL is wrong or the controller's agent gateway is unreachable. | Check `MACHINARCHY_AGENT_SERVER_URL`, DNS, firewall and that the controller serves the agent gateway. |
+| `command stream ended; reopening` with `PermissionDenied` or `Unauthenticated` | The lease is not live yet, or the agent was revoked. | Usually resolves after the next renewal. A revoked agent stops by itself (exit 78). |
+| `command stream ended; reopening` with `ResourceExhausted` | The controller is limiting calls or streams. | Back off is automatic; check the controller's limits if it persists. |
 
 ## Running but unhealthy
 
@@ -37,9 +37,9 @@ agent's configuration or secrets. With metrics on, the textfile shows the same
 signals over time (`docs/configuration.md#metrics`).
 
 - `not enrolled`: registration has not succeeded yet. Look for
-  `retrying` lines with the cause (NATS down, controller not answering).
-- `lease expired at ...`: renewals are failing. Check NATS connectivity
-  (`disconnected from NATS; reconnecting`) and that the controller's agent
+  `retrying` lines with the cause (controller unreachable or not answering, wrong server URL, untrusted certificate).
+- `lease expired at ...`: renewals are failing. Check connectivity
+  (`disconnected from the controller; reconnecting`, `command stream ended; reopening`) and that the controller's agent
   gateway is ready (`/healthz/ready` on machinarchy).
 
 ## Commands are ignored

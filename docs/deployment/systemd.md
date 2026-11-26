@@ -66,13 +66,12 @@ Edit the production environment file:
 sudoedit /etc/machinarchy-agent/agent.env
 ```
 
-At minimum, configure a TLS NATS endpoint, one authentication method, the
+At minimum, configure the controller's https server URL, the
 controller's public key, and the one-time enrollment token. See
 [configuration.md](../configuration.md) for every setting. For example:
 
 ```bash
-MACHINARCHY_AGENT_NATS_URL=tls://nats.example.internal:4222
-MACHINARCHY_AGENT_NATS_CREDENTIALS_FILE=/etc/machinarchy-agent/agent.creds
+MACHINARCHY_AGENT_SERVER_URL=https://machinarchy.example.internal
 MACHINARCHY_AGENT_CONTROLLER_PUBLIC_KEY_FILE=/etc/machinarchy-agent/controller.pub
 MACHINARCHY_AGENT_ENROLLMENT_TOKEN_FILE=/etc/machinarchy-agent/enrollment.token
 ```
@@ -101,7 +100,7 @@ sudo systemd-run --wait --pipe --collect \
   /usr/local/bin/machinarchy-agent --check-config
 ```
 
-The check validates configuration without opening a broker connection or
+The check validates configuration without connecting to the controller or
 starting the Agent runtime. It does not print secret values. The `--collect`
 option requires systemd 236 or newer; on older versions, omit `--collect` and
 use a fresh `--unit` name for each attempt. After the check succeeds, enable and

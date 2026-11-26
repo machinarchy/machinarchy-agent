@@ -7,6 +7,12 @@ notes and file-level details belong in `ChangeLogAI.md`.
 
 ### Changed
 
+- **Breaking:** the agent connects to the controller's agent gateway over gRPC
+  and TLS, and needs only `MACHINARCHY_AGENT_SERVER_URL` (plus the enrolment
+  token and the controller's public key). All `MACHINARCHY_AGENT_NATS_*`
+  settings are removed and refused at startup; existing agents must be
+  re-enrolled. Metrics `machinarchy_agent_nats_*` are now
+  `machinarchy_agent_controller_*`.
 - `MACHINARCHY_AGENT_CONTROLLER_PUBLIC_KEY[_FILE]` accepts two keys (current
   and next, comma- or line-separated), so the controller's signing key can be
   rotated without stopping agents. The wire protocol is unchanged.

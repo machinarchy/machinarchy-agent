@@ -25,7 +25,7 @@ fmt-check: ## Fail when Go sources are not gofmt formatted
 tidy-check: ## Fail when go.mod/go.sum are not tidy or modules fail verification
 	@for m in $(MODULES); do (cd $$m && $(GO) mod verify && $(GO) mod tidy -diff) || exit 1; done
 
-test: ## Run unit and integration tests (embedded NATS server)
+test: ## Run unit and integration tests (in-process fake controller)
 	@for m in $(MODULES); do (cd $$m && $(GO) test -count=1 ./...) || exit 1; done
 
 test-race: ## Run all tests with the race detector

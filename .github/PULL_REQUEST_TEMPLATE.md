@@ -23,7 +23,7 @@ Describe the change and its purpose.
 - [ ] `make test-race`
 - [ ] `make vet`
 - [ ] `make build`
-- [ ] Real NATS/controller integration tests (when relevant)
+- [ ] Real controller (agent gateway) compatibility run (when relevant)
 
 ## Documentation
 

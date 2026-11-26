@@ -40,7 +40,7 @@ compose="${repo_root}/compose.yaml"
 overlay="${repo_root}/compose.systemd.yaml"
 for required in \
   'user: "10001:10001"' \
-  '/run/secrets/nats.creds' \
+  'target: /run/secrets' \
   'uts: host' \
   'read_only: true' \
   'no-new-privileges:true' \

@@ -17,7 +17,8 @@ payloads.
 
 ## Security expectations
 
-- Production broker connections require TLS and authentication.
+- Production connections to the controller require TLS with certificate
+  verification; there is no option to skip it.
 - Agent credentials and identity state must be readable only by the service
   account (normally mode `0600`; parent state directory `0700`).
 - Agent messages are untrusted until protocol, identity, host, lease and
@@ -29,17 +30,17 @@ payloads.
   Agent OS identity and host systemd/Polkit policy.
 - Secrets and sensitive operation output must never be written to logs.
 - No inbound listener is required by the current architecture.
-- NATS permissions must restrict registration/renewal and agent-specific
-  subscribe/publish subjects. A broad `>` permission is not acceptable for an
-  ordinary agent credential.
+- The agent holds no broker address or credential. The controller's gateway
+  must bind each command stream to the agent identity proven by a signed,
+  lease-bound request, so an agent can never read another agent's commands.
 
 ## Known limitations
 
-Inbound commands use a durable JetStream pull consumer with explicit
-acknowledgements, but delivery remains at-least-once. Registration/lease
-request/reply and Agent result publication use Core NATS; terminal results are
-retried from the local result outbox until the controller sends an
-acknowledgement after committing persistence. Local deduplication and broker
-redelivery do not provide exactly-once execution. A crash after an external
+Inbound commands arrive on a gateway stream with explicit acknowledgements,
+but delivery remains at-least-once. Registration, lease renewal and result
+delivery are unary gateway calls; terminal results are retried from the local
+result outbox until the controller sends an acknowledgement after committing
+persistence. Local deduplication and controller redelivery do not provide
+exactly-once execution. A crash after an external
 side effect can result in `unknown`, which must not be automatically retried
 without an explicit policy.

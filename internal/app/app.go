@@ -1,5 +1,5 @@
-// Package app wires the agent together: the NATS connection, registration
-// and lease renewal with the controller, the command consumer, and the
+// Package app wires the agent together: the gateway connection, registration
+// and lease renewal with the controller, the command stream, and the
 // operation dispatcher.
 package app
 
@@ -7,10 +7,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/tls"
-	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -22,14 +19,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
-
 	"github.com/machinarchy/machinarchy-agent/internal/capabilities"
 	"github.com/machinarchy/machinarchy-agent/internal/config"
 	"github.com/machinarchy/machinarchy-agent/internal/dispatch"
 	"github.com/machinarchy/machinarchy-agent/internal/metrics"
 	"github.com/machinarchy/machinarchy-agent/internal/state"
+	"github.com/machinarchy/machinarchy-agent/internal/transport"
 	"github.com/machinarchy/machinarchy-agent/protocol/agentv1"
 )
 
@@ -61,7 +56,7 @@ type Agent struct {
 
 	// For the metrics textfile (ADR-0004).
 	recorder *metrics.Recorder
-	conn     atomic.Pointer[nats.Conn]
+	client   atomic.Pointer[transport.Client]
 	disp     atomic.Pointer[dispatch.Dispatcher]
 }
 
@@ -100,39 +95,38 @@ func (a *Agent) Run(ctx context.Context) error {
 		// Runs last: the final write shows the agent disconnected.
 		defer func() { stopMetrics(); <-done }()
 	}
-	conn, err := a.connectWithStoredCredential()
+	client, err := transport.Dial(transport.Options{
+		ServerURL: a.cfg.Server.URL, CAFile: a.cfg.Server.CAFile, AllowPlaintext: a.cfg.Environment == config.Development,
+		UserAgent: "machinarchy-agent/" + truncate(a.version, 32),
+		OnDisconnect: func() {
+			a.recorder.ControllerDisconnected()
+			a.logger.Warn("disconnected from the controller; reconnecting")
+		},
+		OnReconnect: func() { a.recorder.ControllerReconnected(); a.logger.Info("reconnected to the controller") },
+	})
 	if err != nil {
 		return err
 	}
-	a.conn.Store(conn.nc)
-	defer func() { a.conn.Store(nil); a.disconnect(conn.nc) }()
+	a.client.Store(&client)
+	defer func() {
+		a.client.Store(nil)
+		if err := client.Close(); err != nil {
+			a.logger.Warn("closing the controller connection failed", "error", err)
+		}
+	}()
 
-	identity, err := a.ensureRegistered(ctx, conn.nc)
+	identity, err := a.ensureRegistered(ctx, client)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil
 		}
 		return err
 	}
-	// In operator mode the controller returns a NATS user JWT for this agent.
-	// Switch to it, so the broker limits this connection to the agent's own
-	// subjects, consumer and inbox.
-	if identity.NATSUserJWT != "" && conn.agentID != identity.AgentID {
-		next, err := a.connectAsAgent(identity.AgentID)
-		if err != nil {
-			return err
-		}
-		a.conn.Store(next.nc)
-		a.disconnect(conn.nc)
-		conn = next
-		a.logger.Info("connected to NATS with the agent's own credential", "agent_id", identity.AgentID)
-	}
-	nc := conn.nc
 	a.leaseExpiry.Store(identity.LeaseExpiresAt.UnixNano())
 	a.logger.Info("agent registered", "agent_id", identity.AgentID, "host_id", identity.HostID,
 		"capabilities", strings.Join(a.registry.Names(), ","))
 
-	publisher := &resultPublisher{nc: nc, key: a.key}
+	publisher := &resultPublisher{client: client, key: a.key, timeout: a.cfg.RequestTimeout}
 	disp, err := dispatch.New(a.store, a.registry, publisher, dispatch.Options{
 		AgentID: identity.AgentID, Workers: a.cfg.Workers, QueueSize: a.cfg.QueueSize,
 		MaxOperationTimeout: a.cfg.MaxOperationTimeout, MaxOutputBytes: a.cfg.MaxOutputBytes,
@@ -161,16 +155,16 @@ func (a *Agent) Run(ctx context.Context) error {
 	dispCtx, stopDispatch := context.WithCancel(context.WithoutCancel(ctx))
 	dispDone := make(chan error, 1)
 	go func() { dispDone <- disp.Run(dispCtx) }()
-	start("lease", func(ctx context.Context) error { return a.keepLease(ctx, nc, identity) })
+	start("lease", func(ctx context.Context) error { return a.keepLease(ctx, client, identity) })
 	start("commands", func(ctx context.Context) error {
-		// Pull commands only after recovery, so none is nak'ed for arriving
+		// Take commands only after recovery, so none is refused for arriving
 		// while the dispatcher is still starting.
 		select {
 		case <-disp.Ready():
 		case <-ctx.Done():
 			return nil
 		}
-		return a.consume(ctx, nc, identity.AgentID, disp)
+		return a.consume(ctx, client, disp)
 	})
 
 	<-runCtx.Done()
@@ -183,164 +177,12 @@ func (a *Agent) Run(ctx context.Context) error {
 	return dispErr
 }
 
-func closed(nc *nats.Conn, timeout time.Duration) <-chan struct{} {
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		deadline := time.Now().Add(timeout)
-		for !nc.IsClosed() && time.Now().Before(deadline) {
-			time.Sleep(20 * time.Millisecond)
-		}
-		nc.Close()
-	}()
-	return done
-}
-
-// connection is a NATS connection and, when it authenticates with the agent's
-// NATS user JWT, the agent ID that JWT belongs to.
-type connection struct {
-	nc      *nats.Conn
-	agentID string
-}
-
-func (a *Agent) disconnect(nc *nats.Conn) {
-	if err := nc.Drain(); err != nil && !errors.Is(err, nats.ErrConnectionClosed) {
-		a.logger.Warn("NATS drain failed", "error", err)
-		nc.Close()
-	}
-	<-closed(nc, a.cfg.NATS.DrainTimeout+time.Second)
-}
-
-// jwtRenewalMargin is how long before expiry a stored NATS user JWT is no
-// longer used to start a connection.
-const jwtRenewalMargin = 30 * time.Second
-
-// connectWithStoredCredential uses the stored NATS user JWT while it is
-// valid, and the configured bootstrap credential otherwise (first start, or
-// an agent that was down longer than the JWT lifetime).
-func (a *Agent) connectWithStoredCredential() (connection, error) {
-	if identity := a.store.Snapshot().Identity; identity != nil && identity.NATSUserJWT != "" {
-		if expires, err := jwtExpiry(identity.NATSUserJWT); err == nil && (expires.IsZero() || time.Now().Add(jwtRenewalMargin).Before(expires)) {
-			return a.connectAsAgent(identity.AgentID)
-		}
-		a.logger.Info("stored NATS credential has expired; connecting with the bootstrap credential to renew it")
-	}
-	nc, err := a.connect(a.bootstrapAuth()...)
-	return connection{nc: nc}, err
-}
-
-// connectAsAgent authenticates as the agent's own NATS user: the latest JWT
-// from the state file, and the server nonce signed with the identity key.
-func (a *Agent) connectAsAgent(agentID string) (connection, error) {
-	inbox, err := agentv1.AgentInboxPrefix(agentID)
-	if err != nil {
-		return connection{}, err
-	}
-	credential := func() (string, error) {
-		identity := a.store.Snapshot().Identity
-		if identity == nil || identity.NATSUserJWT == "" {
-			return "", errors.New("no NATS user JWT in agent state")
-		}
-		return identity.NATSUserJWT, nil
-	}
-	sign := func(nonce []byte) ([]byte, error) { return ed25519.Sign(a.key, nonce), nil }
-	nc, err := a.connect(nats.UserJWT(credential, sign), nats.CustomInboxPrefix(inbox))
-	return connection{nc: nc, agentID: agentID}, err
-}
-
-// bootstrapAuth is the configured credential used before the agent has a
-// NATS user JWT.
-func (a *Agent) bootstrapAuth() []nats.Option {
-	c := a.cfg.NATS
-	switch {
-	case c.CredentialsFile != "":
-		return []nats.Option{nats.UserCredentials(c.CredentialsFile)}
-	case c.Token != "":
-		return []nats.Option{nats.Token(c.Token)}
-	case c.Username != "":
-		return []nats.Option{nats.UserInfo(c.Username, c.Password)}
-	}
-	return nil
-}
-
-// jwtExpiry reads the "exp" claim of a JWT without verifying it; the NATS
-// server verifies the credential. A zero time means no expiry.
-func jwtExpiry(token string) (time.Time, error) {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return time.Time{}, errors.New("malformed JWT")
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return time.Time{}, fmt.Errorf("decode JWT claims: %w", err)
-	}
-	var claims struct {
-		Expires int64 `json:"exp"`
-	}
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return time.Time{}, fmt.Errorf("decode JWT claims: %w", err)
-	}
-	if claims.Expires == 0 {
-		return time.Time{}, nil
-	}
-	return time.Unix(claims.Expires, 0), nil
-}
-
-func (a *Agent) connect(auth ...nats.Option) (*nats.Conn, error) {
-	c := a.cfg.NATS
-	options := []nats.Option{
-		nats.Name(c.ClientName),
-		nats.Timeout(c.ConnectTimeout),
-		nats.MaxReconnects(-1),
-		nats.ReconnectWait(c.ReconnectWait),
-		nats.ReconnectJitter(c.ReconnectWait/2, c.ReconnectWait/2),
-		nats.RetryOnFailedConnect(true),
-		nats.DrainTimeout(c.DrainTimeout),
-		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
-			// A nil error is a close the agent asked for (e.g. leaving the
-			// bootstrap connection): not a lost connection.
-			if err != nil {
-				a.recorder.NATSDisconnected()
-				a.logger.Warn("disconnected from NATS; reconnecting", "error", err)
-			}
-		}),
-		nats.ReconnectHandler(func(*nats.Conn) {
-			a.recorder.NATSReconnected()
-			a.logger.Info("reconnected to NATS")
-		}),
-		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
-			if errors.Is(err, nats.ErrAuthExpired) {
-				// Expected once per NATS user JWT lifetime: the server closes
-				// the connection and the client reconnects with the renewed JWT.
-				a.logger.Info("NATS credential expired; reconnecting with the renewed one")
-				return
-			}
-			a.logger.Warn("asynchronous NATS error", "error", err)
-		}),
-	}
-	options = append(options, auth...)
-	if c.UsesTLS() {
-		options = append(options, nats.Secure(&tls.Config{MinVersion: tls.VersionTLS12}))
-		if c.CAFile != "" {
-			options = append(options, nats.RootCAs(c.CAFile))
-		}
-		if c.CertFile != "" {
-			options = append(options, nats.ClientCert(c.CertFile, c.KeyFile))
-		}
-	}
-	nc, err := nats.Connect(strings.Join(c.URLs, ","), options...)
-	if err != nil {
-		return nil, fmt.Errorf("configure NATS connection: %w", err)
-	}
-	return nc, nil
-}
-
 // ensureRegistered returns the stored identity or enrolls with the controller.
 // Transient failures are retried with backoff until ctx ends.
-func (a *Agent) ensureRegistered(ctx context.Context, nc *nats.Conn) (state.Identity, error) {
+func (a *Agent) ensureRegistered(ctx context.Context, client transport.Client) (state.Identity, error) {
 	if identity := a.store.Snapshot().Identity; identity != nil {
 		// Confirm the identity is still valid before consuming commands.
-		renewed, err := a.renewWithRetry(ctx, nc, *identity)
+		renewed, err := a.renewWithRetry(ctx, client, *identity)
 		if err == nil {
 			return renewed, nil
 		}
@@ -359,10 +201,10 @@ func (a *Agent) ensureRegistered(ctx context.Context, nc *nats.Conn) (state.Iden
 			return state.Identity{}, err
 		}
 	}
-	return retry(ctx, a.logger, "registration", func() (state.Identity, error) { return a.register(ctx, nc, requestID) })
+	return retry(ctx, a.logger, "registration", func() (state.Identity, error) { return a.register(ctx, client, requestID) })
 }
 
-func (a *Agent) register(ctx context.Context, nc *nats.Conn, requestID string) (state.Identity, error) {
+func (a *Agent) register(ctx context.Context, client transport.Client, requestID string) (state.Identity, error) {
 	hostname, err := os.Hostname()
 	if err != nil || hostname == "" {
 		hostname = "unknown"
@@ -373,7 +215,7 @@ func (a *Agent) register(ctx context.Context, nc *nats.Conn, requestID string) (
 		OS: runtime.GOOS, Architecture: runtime.GOARCH, Capabilities: a.registry.Names(), SentAt: time.Now().UTC(),
 	}
 	var response agentv1.RegisterResponse
-	if err := a.roundTrip(ctx, nc, agentv1.SubjectRegister, agentv1.KindRegisterRequest, request, agentv1.KindRegisterResponse, &response); err != nil {
+	if err := a.roundTrip(ctx, client.Register, agentv1.KindRegisterRequest, request, agentv1.KindRegisterResponse, &response); err != nil {
 		return state.Identity{}, err
 	}
 	if response.RequestID != requestID {
@@ -389,8 +231,7 @@ func (a *Agent) register(ctx context.Context, nc *nats.Conn, requestID string) (
 		return state.Identity{}, response.Error
 	}
 	identity := state.Identity{AgentID: response.AgentID, HostID: response.HostID, LeaseID: response.Lease.LeaseID,
-		LeaseExpiresAt: response.Lease.ExpiresAt, HeartbeatIntervalMillis: response.Lease.HeartbeatIntervalMillis,
-		NATSUserJWT: response.NATSUserJWT}
+		LeaseExpiresAt: response.Lease.ExpiresAt, HeartbeatIntervalMillis: response.Lease.HeartbeatIntervalMillis}
 	if err := a.store.Update(func(doc *state.Document) error {
 		doc.Identity = &identity
 		doc.PendingRegistrationID = ""
@@ -402,16 +243,16 @@ func (a *Agent) register(ctx context.Context, nc *nats.Conn, requestID string) (
 	return identity, nil
 }
 
-func (a *Agent) renewWithRetry(ctx context.Context, nc *nats.Conn, identity state.Identity) (state.Identity, error) {
-	return retry(ctx, a.logger, "lease renewal", func() (state.Identity, error) { return a.renew(ctx, nc, identity) })
+func (a *Agent) renewWithRetry(ctx context.Context, client transport.Client, identity state.Identity) (state.Identity, error) {
+	return retry(ctx, a.logger, "lease renewal", func() (state.Identity, error) { return a.renew(ctx, client, identity) })
 }
 
-func (a *Agent) renew(ctx context.Context, nc *nats.Conn, identity state.Identity) (state.Identity, error) {
+func (a *Agent) renew(ctx context.Context, client transport.Client, identity state.Identity) (state.Identity, error) {
 	requestID := newID()
 	request := &agentv1.RenewRequest{ProtocolVersion: agentv1.ProtocolVersion, RequestID: requestID, AgentID: identity.AgentID,
 		LeaseID: identity.LeaseID, AgentVersion: truncate(a.version, 64), SentAt: time.Now().UTC()}
 	var response agentv1.RenewResponse
-	if err := a.roundTrip(ctx, nc, agentv1.SubjectLeaseRenew, agentv1.KindRenewRequest, request, agentv1.KindRenewResponse, &response); err != nil {
+	if err := a.roundTrip(ctx, client.Renew, agentv1.KindRenewRequest, request, agentv1.KindRenewResponse, &response); err != nil {
 		return state.Identity{}, err
 	}
 	if response.RequestID != requestID || response.AgentID != identity.AgentID {
@@ -433,9 +274,6 @@ func (a *Agent) renew(ctx context.Context, nc *nats.Conn, identity state.Identit
 	identity.LeaseID = response.Lease.LeaseID
 	identity.LeaseExpiresAt = response.Lease.ExpiresAt
 	identity.HeartbeatIntervalMillis = response.Lease.HeartbeatIntervalMillis
-	if response.NATSUserJWT != "" {
-		identity.NATSUserJWT = response.NATSUserJWT
-	}
 	if err := a.store.Update(func(doc *state.Document) error { doc.Identity = &identity; return nil }); err != nil {
 		return state.Identity{}, permanent(fmt.Errorf("persist lease: %w", err))
 	}
@@ -453,8 +291,8 @@ func (a *Agent) gauges() metrics.Gauges {
 	for key, n := range counts.Operations {
 		g.Operations[metrics.OperationKey{Phase: key[0], Status: key[1]}] = n
 	}
-	if nc := a.conn.Load(); nc != nil {
-		g.NATSConnected = nc.IsConnected()
+	if client := a.client.Load(); client != nil {
+		g.ControllerConnected = (*client).Connected()
 	}
 	if disp := a.disp.Load(); disp != nil {
 		g.QueueDepth, g.Running = disp.Stats()
@@ -464,7 +302,7 @@ func (a *Agent) gauges() metrics.Gauges {
 
 // keepLease renews on the controller-requested cadence. Commands are paused
 // whenever the lease has expired (see consume).
-func (a *Agent) keepLease(ctx context.Context, nc *nats.Conn, identity state.Identity) error {
+func (a *Agent) keepLease(ctx context.Context, client transport.Client, identity state.Identity) error {
 	for {
 		timer := time.NewTimer(identity.HeartbeatInterval())
 		select {
@@ -473,7 +311,7 @@ func (a *Agent) keepLease(ctx context.Context, nc *nats.Conn, identity state.Ide
 			return nil
 		case <-timer.C:
 		}
-		renewed, err := a.renewWithRetry(ctx, nc, identity)
+		renewed, err := a.renewWithRetry(ctx, client, identity)
 		if err != nil {
 			return err
 		}
@@ -485,119 +323,126 @@ func (a *Agent) leaseValid() bool {
 	return time.Now().UnixNano() < a.leaseExpiry.Load()
 }
 
-func (a *Agent) roundTrip(ctx context.Context, nc *nats.Conn, subject string, requestKind agentv1.Kind, request agentv1.Body, responseKind agentv1.Kind, response agentv1.Body) error {
+func (a *Agent) roundTrip(ctx context.Context, call func(context.Context, []byte) ([]byte, error), requestKind agentv1.Kind, request agentv1.Body, responseKind agentv1.Kind, response agentv1.Body) error {
 	payload, err := agentv1.Seal(a.key, requestKind, request)
 	if err != nil {
 		return permanent(err)
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, a.cfg.RequestTimeout)
 	defer cancel()
-	msg, err := nc.RequestWithContext(requestCtx, subject, payload)
+	data, err := call(requestCtx, payload)
 	if err != nil {
 		return fmt.Errorf("%s request: %w", requestKind, err)
 	}
-	if err := agentv1.OpenAny(a.cfg.ControllerPublicKeys, responseKind, msg.Data, agentv1.MaxControlMessageBytes, response); err != nil {
+	if err := agentv1.OpenAny(a.cfg.ControllerPublicKeys, responseKind, data, agentv1.MaxControlMessageBytes, response); err != nil {
 		// A response that is not signed by the pinned controller key is
-		// treated as no response at all; keep waiting for the real one.
+		// never trusted; it is retried like a lost response.
 		return fmt.Errorf("%s: %w", responseKind, err)
 	}
 	return nil
 }
 
-// consume binds to the controller-provisioned durable consumer and hands
-// verified commands to the dispatcher.
-func (a *Agent) consume(ctx context.Context, nc *nats.Conn, agentID string, disp *dispatch.Dispatcher) error {
-	js, err := jetstream.New(nc)
-	if err != nil {
-		return fmt.Errorf("JetStream: %w", err)
-	}
-	subject, err := agentv1.CommandSubject(agentID)
-	if err != nil {
-		return err
-	}
-	name, err := agentv1.CommandConsumer(agentID)
-	if err != nil {
-		return err
-	}
-	consumer, err := retry(ctx, a.logger, "command consumer binding", func() (jetstream.Consumer, error) {
-		bindCtx, cancel := context.WithTimeout(ctx, a.cfg.RequestTimeout)
-		defer cancel()
-		consumer, err := js.Consumer(bindCtx, agentv1.CommandStream, name)
-		if err != nil {
-			return nil, fmt.Errorf("bind consumer %s: %w", name, err)
-		}
-		info := consumer.CachedInfo()
-		if info.Config.FilterSubject != subject || info.Config.AckPolicy != jetstream.AckExplicitPolicy {
-			return nil, permanent(fmt.Errorf("consumer %s must filter %s with explicit acks", name, subject))
-		}
-		return consumer, nil
-	})
-	if err != nil {
-		return err
-	}
-	messages, err := consumer.Messages(jetstream.PullMaxMessages(a.cfg.QueueSize))
-	if err != nil {
-		return fmt.Errorf("start command consumer: %w", err)
-	}
-	stop := context.AfterFunc(ctx, messages.Stop)
-	defer stop()
-	defer messages.Stop()
-	a.logger.Info("consuming commands", "consumer", name)
+// streamBackoff bounds the wait between command stream attempts.
+const (
+	streamBackoffFloor   = time.Second
+	streamBackoffCeiling = 30 * time.Second
+	// streamStable is how long a stream must have run before its failure
+	// resets the backoff.
+	streamStable = 10 * time.Second
+)
+
+// consume keeps one command stream open and hands verified commands to the
+// dispatcher. It reconnects with backoff after a lost connection, a restart of
+// the controller or a stream the controller closed; a lease that is not valid
+// yet is retried once the lease keeper has renewed it.
+func (a *Agent) consume(ctx context.Context, client transport.Client, disp *dispatch.Dispatcher) error {
+	delay := streamBackoffFloor
 	for {
-		msg, err := messages.Next()
-		if err != nil {
-			if ctx.Err() != nil || errors.Is(err, jetstream.ErrMsgIteratorClosed) {
-				return nil
-			}
-			a.logger.Warn("command iterator error", "error", err)
-			continue
+		began := time.Now()
+		err := a.serveStream(ctx, client, disp)
+		if ctx.Err() != nil {
+			return nil
 		}
-		a.handle(ctx, agentID, disp, msg)
+		if time.Since(began) >= streamStable {
+			delay = streamBackoffFloor
+		}
+		wait := delay/2 + mathrand.N(delay/2+1) // #nosec G404 -- retry jitter only
+		a.logger.Warn("command stream ended; reopening", "error", err, "retry_in", wait.Round(time.Millisecond).String())
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil
+		case <-timer.C:
+		}
+		delay = min(delay*2, streamBackoffCeiling)
 	}
 }
 
-func (a *Agent) handle(ctx context.Context, agentID string, disp *dispatch.Dispatcher, msg jetstream.Msg) {
+// serveStream runs one command stream until it ends.
+func (a *Agent) serveStream(ctx context.Context, client transport.Client, disp *dispatch.Dispatcher) error {
+	identity := a.store.Snapshot().Identity
+	if identity == nil {
+		return errors.New("agent has no identity")
+	}
 	if !a.leaseValid() {
-		a.settle(msg.NakWithDelay(5*time.Second), "nak (lease expired)") // paused until the lease is renewed
-		return
+		return errors.New("lease has expired; waiting for a renewal")
+	}
+	request := &agentv1.RenewRequest{ProtocolVersion: agentv1.ProtocolVersion, RequestID: newID(), AgentID: identity.AgentID,
+		LeaseID: identity.LeaseID, AgentVersion: truncate(a.version, 64), SentAt: time.Now().UTC()}
+	open, err := agentv1.Seal(a.key, agentv1.KindRenewRequest, request)
+	if err != nil {
+		return err
+	}
+	stream, err := client.Commands(ctx, open)
+	if err != nil {
+		return err
+	}
+	defer stream.Close()
+	a.logger.Info("consuming commands")
+	for {
+		data, err := stream.Recv()
+		if err != nil {
+			return err
+		}
+		if err := a.handle(ctx, identity.AgentID, disp, stream, data); err != nil {
+			return err
+		}
+	}
+}
+
+// handle verifies one command and acknowledges it once the dispatcher has
+// taken it over. Returning an error ends the stream without an acknowledgement,
+// so the controller redelivers the command on the next stream.
+func (a *Agent) handle(ctx context.Context, agentID string, disp *dispatch.Dispatcher, stream transport.CommandStream, data []byte) error {
+	if !a.leaseValid() {
+		return errors.New("lease expired; command left for redelivery") // paused until the lease is renewed
 	}
 	var cmd agentv1.Command
-	if err := agentv1.OpenAny(a.cfg.ControllerPublicKeys, agentv1.KindCommand, msg.Data(), agentv1.MaxCommandMessageBytes, &cmd); err != nil {
+	if err := agentv1.OpenAny(a.cfg.ControllerPublicKeys, agentv1.KindCommand, data, agentv1.MaxCommandMessageBytes, &cmd); err != nil {
 		a.logger.Warn("discarding unauthenticated or malformed command", "error", err)
-		a.settle(msg.Term(), "term")
-		return
+		return stream.Ack("")
 	}
 	if err := cmd.ValidateAt(agentID, time.Now()); err != nil {
 		a.logger.Warn("discarding command", "command_id", cmd.CommandID, "error", err)
-		a.settle(msg.Term(), "term")
-		return
+		return stream.Ack(cmd.CommandID)
 	}
 	if err := disp.Handle(ctx, cmd); err != nil {
 		a.logger.Warn("command not processed; will be redelivered", "command_id", cmd.CommandID, "error", err)
-		a.settle(msg.NakWithDelay(2*time.Second), "nak")
-		return
+		return err
 	}
-	ackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), a.cfg.RequestTimeout)
-	defer cancel()
-	if err := msg.DoubleAck(ackCtx); err != nil {
-		// Redelivery is harmless: the replay ledger drops duplicates.
-		a.logger.Warn("command acknowledgement not confirmed", "command_id", cmd.CommandID, "error", err)
-	}
-}
-
-// settle logs a failed nak/term; JetStream redelivers after AckWait anyway.
-func (a *Agent) settle(err error, action string) {
-	if err != nil {
-		a.logger.Warn("command "+action+" failed; broker will redeliver after ack wait", "error", err)
-	}
+	// A lost acknowledgement means redelivery, which is harmless: the replay
+	// ledger drops duplicates.
+	return stream.Ack(cmd.CommandID)
 }
 
 type resultPublisher struct {
-	nc  *nats.Conn
-	key ed25519.PrivateKey
+	client  transport.Client
+	key     ed25519.PrivateKey
+	timeout time.Duration
 }
 
-func (p *resultPublisher) PublishResult(_ context.Context, result agentv1.Result) error {
+func (p *resultPublisher) PublishResult(ctx context.Context, result agentv1.Result) error {
 	payload, err := agentv1.Seal(p.key, agentv1.KindResult, &result)
 	if err != nil {
 		return err
@@ -605,14 +450,9 @@ func (p *resultPublisher) PublishResult(_ context.Context, result agentv1.Result
 	if len(payload) > agentv1.MaxResultMessageBytes {
 		return errors.New("result exceeds the maximum message size")
 	}
-	if !p.nc.IsConnected() {
-		return errors.New("not connected to NATS")
-	}
-	subject, err := agentv1.ResultSubject(result.AgentID)
-	if err != nil {
-		return err
-	}
-	return p.nc.Publish(subject, payload)
+	callCtx, cancel := context.WithTimeout(ctx, p.timeout)
+	defer cancel()
+	return p.client.SendResult(callCtx, payload)
 }
 
 type permanentError struct{ err error }
