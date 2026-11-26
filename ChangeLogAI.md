@@ -1,5 +1,10 @@
 # AI Change Log
 
+## 2026-11-27 — Fix: flaky `TestRepeatedOperationRunsOnce` (branch ai/p8-gateway-transport)
+
+- **Fixed:** the test counted a republished terminal result as a second run. A repeated operation is not executed again, but the outbox may resend the stored result (at-least-once). The test now counts new `Accepted` notices, which only a real second run produces. Test only; no agent behavior change.
+- **Checks run:** `go test -race -count=10 -run TestRepeatedOperationRunsOnce ./internal/app` pass (failed 1/1 before). Not run: full `make test-race`.
+
 ## 2026-11-26 — Phase 8 step 8.4: agent connects through the controller's gateway over gRPC; NATS removed (branch ai/p8-gateway-transport)
 
 - **Implemented:** new `internal/transport` (gRPC client of `machinarchy.agent.v1.AgentGateway`: `Register`, `Renew`, `SendResult`, and the `Commands` stream, raw signed envelopes with codec `agentv1`; TLS always verified, optional CA file, `http://` only in development; connectivity tracked for metrics). `internal/app` uses it instead of NATS: registration and renewal as unary calls, results as `SendResult`, commands from a lease-bound stream that is acknowledged after the dispatcher takes a command and reopened with jittered backoff (1s to 30s) after loss, controller restart or an expired lease. `protocol/agentv1/gateway.go` (service, methods, codec, ack bound) and `doc.go` describe the transport-neutral contract.

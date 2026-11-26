@@ -416,7 +416,9 @@ func TestRepeatedOperationRunsOnce(t *testing.T) {
 	for {
 		select {
 		case result := <-e.controller.Results():
-			if result.OperationID == op && result.Status == agentv1.StatusSucceeded {
+			// A repeat may republish the stored terminal result (the outbox
+			// is at-least-once); only a new acceptance means it ran again.
+			if result.OperationID == op && result.Status == agentv1.StatusAccepted {
 				count++
 			}
 			if result.OperationID == next && result.Status == agentv1.StatusSucceeded {
